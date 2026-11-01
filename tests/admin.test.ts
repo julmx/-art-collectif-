@@ -12,7 +12,7 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
   const {app}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false,adminPasswordHash:passwordHash});
   const headers={origin:'http://localhost:4173'};
   try {
-    expect((await app.inject({method:'GET',url:'/api/admin/events'})).statusCode).toBe(401);
+    for (const url of ['/api/admin/events','/api/admin/image.png','/api/admin/export/final.png','/api/admin/export/overlay.png','/api/admin/export/events.jsonl','/api/admin/export/moderation.jsonl']) expect((await app.inject({method:'GET',url})).statusCode).toBe(401);
     expect((await app.inject({method:'POST',url:'/api/admin/login',headers,payload:{password:'wrong'}})).statusCode).toBe(401);
     const login=await app.inject({method:'POST',url:'/api/admin/login',headers,payload:{password}}); expect(login.statusCode).toBe(200);
     const cookie=(login.headers['set-cookie'] as string).split(';')[0], auth={...headers,cookie};
@@ -24,6 +24,12 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     const config={palette:PALETTE,title:'Projet',description:'Description',participationTerms:'Conditions de participation'};
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:config})).statusCode).toBe(200);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(200);
+    const exported=await app.inject({method:'GET',url:'/api/admin/image.png?seq=0&moderation=raw',headers:{cookie}});
+    expect(exported.statusCode).toBe(200); expect(exported.headers['x-art-sequence']).toBe('0');
+    const image=await sharp(exported.rawPayload).raw().toBuffer({resolveWithObject:true}); expect([...image.data.subarray(0,3)]).toEqual([100,100,100]);
+    const overlay=await app.inject({method:'GET',url:'/api/admin/export/overlay.png',headers:{cookie}}); const rgba=await sharp(overlay.rawPayload).raw().toBuffer(); expect(rgba[3]).toBe(0);
+    expect((await app.inject({method:'GET',url:'/api/admin/image.png?seq=0&at=2026-01-01T00:00:00Z',headers:{cookie}})).statusCode).toBe(400);
+
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:config})).statusCode).toBe(409);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed'}})).statusCode).toBe(200);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(409);
