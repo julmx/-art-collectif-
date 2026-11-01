@@ -37,3 +37,14 @@ test('deux navigateurs convergent et retrouvent le dessin après rechargement', 
     await expect.poll(pixel).toEqual([240,100,73,255]);
   } finally { await first.close(); await second.close(); }
 });
+test('interface privée : connexion et consultation de l’historique',async({page})=>{
+  await page.goto('/admin.html');
+  await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
+  await page.getByLabel('Mot de passe').fill('test-password');
+  await page.getByRole('button',{name:'Se connecter'}).click();
+  await expect(page.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
+  await page.getByRole('button',{name:'Actualiser l’historique'}).click();
+  await expect(page.locator('#events pre').first()).toBeVisible();
+  await page.getByRole('button',{name:'Se déconnecter'}).click();
+  await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
+});
