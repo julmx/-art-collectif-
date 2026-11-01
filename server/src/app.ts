@@ -24,11 +24,20 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   });
   io.use((socket,next) => { const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
+  // Per-participant token bucket: burst 40, sustained 20 commands per second.
+  const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
     socket.emit('canvas:state',state());
+    socket.on('disconnect', () => { if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string); });
     socket.on('canvas:resync', () => socket.emit('canvas:state',state()));
     socket.on('draw:submit',(input:unknown,ack:unknown) => {
       if (typeof ack !== 'function') return;
+      const id = socket.data.participantId as string, now = Date.now();
+      const bucket = buckets.get(id) ?? {tokens:40,time:now};
+      bucket.tokens = Math.min(40,bucket.tokens + (now-bucket.time)*0.02); bucket.time=now;
+      buckets.set(id,bucket);
+      if (bucket.tokens < 1) { (ack as (r:unknown)=>void)({opId:typeof (input as {opId?:unknown})?.opId === 'string' ? (input as {opId:string}).opId : '',accepted:false,code:'RATE_LIMITED'}); return; }
+      bucket.tokens -= 1;
       const result = store.submit(socket.data.participantId as string,input);
       (ack as (r:unknown)=>void)(result);
       if (!result.accepted || result.duplicate) return;

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { SIZES, WIDTH, HEIGHT, paintBrush, applyCells } from '../../../shared/raster';
+import { SIZES, WIDTH, HEIGHT, paintBrush, applyCells, brushMask } from '../../../shared/raster';
 import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 import { PALETTE } from '../../../shared/palette';
 
@@ -39,6 +39,11 @@ export class Store {
     if (duplicate) return duplicate.command_json === canonical ? {opId:c.opId,accepted:true,seq:duplicate.seq,duplicate:true} : {opId:c.opId,accepted:false,code:'OP_ID_CONFLICT'};
     const reject = (code:string): DrawResult => ({opId:c.opId,accepted:false,code});
     if ((this.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
+    // Bound worst-case raster work before committing. Long inputs must be split.
+    const maskSize = brushMask(c.size).length;
+    let work = c.points.length ? maskSize : 0;
+    for (let i=1;i<c.points.length;i++) work += (1 + Math.max(Math.abs(c.points[i][0]-c.points[i-1][0]),Math.abs(c.points[i][1]-c.points[i-1][1]))) * maskSize;
+    if (work > 400_000) return reject('COST_LIMIT_EXCEEDED');
     const prior = this.db.prepare('SELECT part_index,final,tool,color_id,size,points_json FROM draw_events WHERE participant_id=? AND stroke_id=? ORDER BY part_index DESC LIMIT 1').get(participantId,c.strokeId) as {part_index:number;final:number;tool:string;color_id:number;size:number;points_json:string}|undefined;
     if (!prior && (c.partIndex !== 0 || c.points.length === 0)) return reject('PART_OUT_OF_ORDER');
     if (prior) {
