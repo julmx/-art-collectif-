@@ -55,7 +55,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
     if(typeof next!=='string' || !allowed[p.status].includes(next)) return reply.code(409).send({error:'INVALID_TRANSITION'});
     if(next==='open' && (!p.base_image_path || !validPalette(JSON.parse(p.palette_json)) || !p.participation_terms.trim())) return reply.code(409).send({error:'PROJECT_NOT_CONFIGURED'});
     const now=new Date().toISOString(); store.db.prepare('UPDATE project SET status=?, started_at=?, closed_at=? WHERE id=1').run(next,p.started_at || (next==='open'?now:null),next==='closed'?now:null);
-    io.emit('project:status',{status:next}); return {ok:true,status:next};
+    io.emit('project:status',{status:next}); if(next==='open') io.emit('canvas:reset',options.state()); return {ok:true,status:next};
   });
   app.get('/api/admin/events',async(req,reply)=>{
     const q=req.query as {after?:string;limit?:string}; const after=Number(q.after || 0), limit=Number(q.limit || 100);

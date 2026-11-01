@@ -2,9 +2,9 @@ import { io, type Socket } from 'socket.io-client';
 import { HEIGHT, WIDTH, applyCells, paintBrush } from '../../../shared/raster';
 import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 
-type State = { grid: number[]; seq: number; moderationRevision: number; status: string };
+type State = { grid: number[]; seq: number; moderationRevision: number; status: string; palette:string[] };
 type Update = { seq: number; moderationRevision: number; changes: [number,number][] };
-type Pending = { command: DrawCommand; seq?: number; sent: boolean };
+type Pending = { command: DrawCommand; seq?: number; sent: boolean; preview:boolean };
 
 /** The authoritative grid is never mutated by optimistic rendering. */
 export class CollaborationClient {
@@ -16,7 +16,8 @@ export class CollaborationClient {
   private ready = false;
   private connected = false;
   private status = 'draft';
-  constructor(private changed: (grid: Uint8Array, available: boolean, status: string) => void) {}
+  private palette: string[] = [];
+  constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[]) => void) {}
   async connect() {
     const response = await fetch('/api/session',{method:'POST',credentials:'same-origin'});
     if (!response.ok) throw new Error('Session indisponible');
@@ -24,15 +25,15 @@ export class CollaborationClient {
     socket.on('connect',()=>{ this.connected=true; this.ready=false; this.emit(); });
     socket.on('disconnect',()=>{ this.connected=false; this.ready=false; for (const p of this.pending) p.sent=false; this.emit(); });
     socket.on('canvas:state',(state:State)=>this.install(state));
-    socket.on('canvas:reset',(state:State)=>this.install(state));
+    socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state); });
     socket.on('project:status',(message:{status:string})=>{ this.status=message.status; this.emit(); });
     socket.on('draw:applied',(update:Update)=>this.apply(update));
     socket.connect();
   }
-  submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open') return false; this.pending.push({command,sent:false}); this.emit(); this.flush(); return true; }
+  submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open') return false; this.pending.push({command,sent:false,preview:true}); this.emit(); this.flush(); return true; }
   private install(state:State) {
     if (state.grid.length !== WIDTH * HEIGHT || !Number.isSafeInteger(state.seq)) { this.socket?.disconnect(); return; }
-    this.confirmed = Uint8Array.from(state.grid); this.seq=state.seq; this.revision=state.moderationRevision; this.status=state.status; this.ready=true;
+    this.confirmed = Uint8Array.from(state.grid); this.seq=state.seq; this.revision=state.moderationRevision; this.status=state.status; this.palette=state.palette; this.ready=true;
     this.pending=this.pending.filter(p=>p.seq === undefined || p.seq > this.seq);
     for (const p of this.pending) p.sent=false;
     this.emit(); this.flush();
@@ -60,7 +61,7 @@ export class CollaborationClient {
   }
   private emit() {
     const display=this.confirmed.slice();
-    for (const {command:c} of this.pending) applyCells(display,paintBrush(c.points,c.size,c.colorId));
-    this.changed(display,this.ready && this.connected && this.status==='open',this.connected ? this.status : 'disconnected');
+    for (const {command:c,preview} of this.pending) if (preview) applyCells(display,paintBrush(c.points,c.size,c.colorId));
+    this.changed(display,this.ready && this.connected && this.status==='open',this.connected ? this.status : 'disconnected',this.palette);
   }
 }
