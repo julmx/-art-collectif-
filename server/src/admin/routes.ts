@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { Server } from 'socket.io';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { writeFile, rename, readFile, mkdir } from 'node:fs/promises';
+import { writeFile, rename, readFile, mkdir, readdir, realpath, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
 import { validPalette } from '../../../shared/palette';
@@ -68,6 +69,13 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
     const b=req.body as {participantId?:unknown;strokeId?:unknown;action?:unknown;reason?:unknown};
     if(typeof b?.participantId!=='string'||typeof b.strokeId!=='string'||(b.action!=='hide'&&b.action!=='restore')||typeof b.reason!=='string') return reply.code(400).send({error:'INVALID_MODERATION'});
     try { const revision=store.moderate(b.participantId,b.strokeId,b.action,b.reason); io.emit('canvas:reset',options.state()); return {revision}; } catch {return reply.code(400).send({error:'INVALID_MODERATION'});}
+  });
+  app.get('/api/admin/archives',async(_req,reply)=>{
+    const dir=join(options.dataDir,'archives'); const entries=await readdir(dir,{withFileTypes:true}).catch(()=>[]); const archives=entries.filter(e=>e.isFile()&&/^[A-Za-z0-9_-]{1,100}\.zip$/.test(e.name)).map(e=>({id:e.name.slice(0,-4)}));return reply.header('Cache-Control','no-store').send({archives});
+  });
+  app.get('/api/admin/archives/:archiveId',async(req,reply)=>{
+    const id=(req.params as {archiveId:string}).archiveId;if(!/^[A-Za-z0-9_-]{1,100}$/.test(id))return reply.code(404).send();
+    try {const dir=await realpath(join(options.dataDir,'archives')),file=await realpath(join(dir,`${id}.zip`));if(!file.startsWith(dir+'/')||!(await stat(file)).isFile())return reply.code(404).send();return reply.header('Cache-Control','no-store').header('Content-Disposition',`attachment; filename="${id}.zip"`).type('application/zip').send(createReadStream(file));} catch{return reply.code(404).send();}
   });
   app.get('/api/base.png',async (_req,reply)=>{ const p=store.db.prepare('SELECT base_image_path FROM project WHERE id=1').get() as {base_image_path:string|null}; if(!p.base_image_path || !resolve(p.base_image_path).startsWith(resolve(options.dataDir)+'/')) return reply.code(404).send(); try {return reply.header('Cache-Control','no-store').type('image/png').send(await readFile(p.base_image_path));} catch {return reply.code(404).send();} });
 }

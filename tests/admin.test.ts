@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { mkdtempSync,rmSync } from 'node:fs';
+import { mkdtempSync,rmSync,mkdirSync,writeFileSync,symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes,scryptSync } from 'node:crypto';
@@ -12,10 +12,14 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
   const {app}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false,adminPasswordHash:passwordHash});
   const headers={origin:'http://localhost:4173'};
   try {
-    for (const url of ['/api/admin/events','/api/admin/image.png','/api/admin/export/final.png','/api/admin/export/overlay.png','/api/admin/export/events.jsonl','/api/admin/export/moderation.jsonl']) expect((await app.inject({method:'GET',url})).statusCode).toBe(401);
+    for (const url of ['/api/admin/events','/api/admin/image.png','/api/admin/export/final.png','/api/admin/export/overlay.png','/api/admin/export/events.jsonl','/api/admin/export/moderation.jsonl','/api/admin/archives','/api/admin/archives/export']) expect((await app.inject({method:'GET',url})).statusCode).toBe(401);
     expect((await app.inject({method:'POST',url:'/api/admin/login',headers,payload:{password:'wrong'}})).statusCode).toBe(401);
     const login=await app.inject({method:'POST',url:'/api/admin/login',headers,payload:{password}}); expect(login.statusCode).toBe(200);
     const cookie=(login.headers['set-cookie'] as string).split(';')[0], auth={...headers,cookie};
+    mkdirSync(join(dir,'archives'));writeFileSync(join(dir,'archives','export.zip'),'archive');writeFileSync(join(dir,'private.txt'),'secret');symlinkSync(join(dir,'private.txt'),join(dir,'archives','escape.zip'));
+    expect((await app.inject({method:'GET',url:'/api/admin/archives/export',headers:{cookie}})).body).toBe('archive');
+    expect((await app.inject({method:'GET',url:'/api/admin/archives/escape',headers:{cookie}})).statusCode).toBe(404);
+
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(409);
     const bad=await sharp({create:{width:720,height:480,channels:3,background:{r:255,g:0,b:0}}}).png().toBuffer();
     expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:bad})).statusCode).toBe(400);
