@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { SIZES, WIDTH, HEIGHT, paintBrush, applyCells, brushMask } from '../../../shared/raster';
+import { SIZES, WIDTH, HEIGHT, paintBrush, applyCells, brushMask, type Cell } from '../../../shared/raster';
 import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 import { PALETTE } from '../../../shared/palette';
 
@@ -19,6 +19,8 @@ export class Store {
   grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
   seq = 0;
   healthy = true;
+  private batching = false;
+  lastChanges: Cell[] | null = null;
   constructor(path: string, deferRebuild=false) {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
@@ -100,16 +102,30 @@ export class Store {
     }
     let seq: number;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      if (!this.batching) this.db.exec('BEGIN IMMEDIATE');
       const last = this.db.prepare('SELECT created_at FROM draw_events ORDER BY seq DESC LIMIT 1').get() as {created_at:string}|undefined;
       const now = new Date().toISOString(), created = last && last.created_at > now ? last.created_at : now;
       const result = this.db.prepare('INSERT INTO draw_events(op_id,participant_id,stroke_id,part_index,final,tool,color_id,size,points_json,command_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(c.opId,participantId,c.strokeId,c.partIndex,Number(c.final),c.tool,c.colorId,c.size,JSON.stringify(c.points),canonical,created);
-      seq = Number(result.lastInsertRowid); this.db.exec('COMMIT');
-    } catch { try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }
+      seq = Number(result.lastInsertRowid); if (!this.batching) this.db.exec('COMMIT');
+    } catch (error) { if (this.batching) throw error; try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }
     // Never report a storage rejection after a successful commit. If reconstruction
     // also fails, propagate the error so the service stops serving stale state.
-    try { if (!this.hidden(participantId,c.strokeId,this.revision())) applyCells(this.grid,paintBrush(c.points,c.size,c.colorId)); this.seq = seq; } catch { this.healthy=false; this.rebuild(); this.healthy=true; }
+    this.lastChanges=null;
+    try { const cells=this.hidden(participantId,c.strokeId,this.revision()) ? [] : paintBrush(c.points,c.size,c.colorId); applyCells(this.grid,cells); this.lastChanges=cells; this.seq = seq; } catch { this.healthy=false; this.rebuild(); this.healthy=true; }
     return {opId:c.opId,accepted:true,seq,duplicate:false};
+  }
+  submitBatch(items: {participantId:string;input:unknown}[]): {result:DrawResult;changes:Cell[]|null}[] {
+    if (!items.length) return [];
+    this.db.exec('BEGIN IMMEDIATE'); this.batching=true;
+    try {
+      const results=items.map(item=>{const result=this.submit(item.participantId,item.input);return {result,changes:result.accepted&&!result.duplicate?this.lastChanges:null};});
+      this.db.exec('COMMIT'); this.batching=false; return results;
+    } catch {
+      this.healthy=false; this.batching=false;
+      try { this.db.exec('ROLLBACK'); } catch { throw new Error('Unable to roll back failed draw batch'); }
+      this.rebuild(); this.healthy=true;
+      return items.map(item=>({result:{opId:typeof (item.input as {opId?:unknown})?.opId==='string'?(item.input as {opId:string}).opId:'',accepted:false as const,code:'STORAGE_UNAVAILABLE'},changes:null}));
+    }
   }
   close() { this.db.close(); }
 }

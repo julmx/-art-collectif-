@@ -3,9 +3,8 @@ import cookie from '@fastify/cookie';
 import { Server } from 'socket.io';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Store } from './database/store';
-import { WIDTH, HEIGHT, paintBrush } from '../../shared/raster';
+import { WIDTH, HEIGHT } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
-import type { DrawCommand } from '../../shared/protocol';
 import { registerAdmin } from './admin/routes';
 import { dirname, join } from 'node:path';
 import { Snapshots } from './renderer/snapshots';
@@ -35,6 +34,22 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
   registerAdmin(app,store,io,snapshots,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
+  type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
+  const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
+  const flush=()=>{
+    flushTimer=undefined;const batch=queue.splice(0,100);if(!batch.length)return;
+    try {
+      const results=store.submitBatch(batch),revision=store.revision();
+      for(let i=0;i<batch.length;i++){
+        const {result,changes:cells}=results[i];batch[i].ack(result);
+        if(!result.accepted||result.duplicate)continue;
+        if(result.seq%500===0)scheduleSnapshot();
+        if(!cells){io.emit('canvas:reset',state());continue;}
+        io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
+      }
+    } catch(error){app.log.error(error,'batch reconstruction failed');io.disconnectSockets(true);}
+    if(queue.length)flushTimer=setTimeout(flush,0);
+  };
   // Per-participant token bucket: burst 40, sustained 20 commands per second.
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
@@ -49,17 +64,10 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       buckets.set(id,bucket);
       if (bucket.tokens < 1) { (ack as (r:unknown)=>void)({opId:typeof (input as {opId?:unknown})?.opId === 'string' ? (input as {opId:string}).opId : '',accepted:false,code:'RATE_LIMITED'}); return; }
       bucket.tokens -= 1;
-      let result; try { result = store.submit(socket.data.participantId as string,input); } catch (error) { app.log.error(error,'reconstruction failed after commit'); io.disconnectSockets(true); return; }
-      (ack as (r:unknown)=>void)(result);
-      if (!result.accepted || result.duplicate) return;
-      if (result.seq % 500 === 0) scheduleSnapshot();
-      const command = input as DrawCommand;
-      const cells = store.hidden(socket.data.participantId as string,command.strokeId,store.revision()) ? [] : paintBrush(command.points,command.size,command.colorId);
-      const unique = new Map<number,number>(); for (const [x,y,color] of cells) unique.set(y*WIDTH+x,color);
-      const revision = (store.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision;
-      io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:[...unique]});
+      if(queue.length>=1000){(ack as (r:unknown)=>void)({opId:typeof (input as {opId?:unknown})?.opId==='string'?(input as {opId:string}).opId:'',accepted:false,code:'RATE_LIMITED'});return;}
+      queue.push({participantId:id,input,ack:ack as (value:unknown)=>void});if(!flushTimer)flushTimer=setTimeout(flush,5);
     });
   });
-  app.addHook('onClose', async () => { clearInterval(timer); await snapshotWork; io.close(); store.close(); });
+  app.addHook('onClose', async () => { clearInterval(timer); if(flushTimer)clearTimeout(flushTimer); queue.length=0; await snapshotWork; io.close(); store.close(); });
   return {app,store,io};
 }

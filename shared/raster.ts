@@ -40,11 +40,14 @@ export function brushMask(diameter: number): Point[] {
 }
 
 export function paintBrush(points: readonly Point[], diameter: number, colorId: number): Cell[] {
-  const mask = brushMask(diameter), cells: Cell[] = [];
+  const mask = brushMask(diameter), cells: Cell[] = [], seen = new Set<number>();
   for (let i = 0; i < points.length; i++) {
     const previous = points[Math.max(0, i - 1)], current = points[i];
     for (const [cx, cy] of linePoints(previous[0], previous[1], current[0], current[1])) {
-      for (const [dx, dy] of mask) cells.push(...paintPixel(cx + dx, cy + dy, colorId));
+      for (const [dx, dy] of mask) {
+        const x=cx+dx, y=cy+dy, index=y*WIDTH+x;
+        if (x>=0 && x<WIDTH && y>=0 && y<HEIGHT && !seen.has(index)) {seen.add(index);cells.push([x,y,colorId]);}
+      }
     }
   }
   return cells;
