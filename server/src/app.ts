@@ -13,8 +13,11 @@ import { Snapshots } from './renderer/snapshots';
 export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string }) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
   await app.register(cookie);
-  const store = new Store(options.dbPath);
+  const store = new Store(options.dbPath,true);
   const snapshots = new Snapshots(store,join(dirname(options.dbPath),'snapshots'));
+  const snapshot = await snapshots.latest(store.seq,store.revision());
+  store.grid=store.replay(store.seq,'moderated',store.revision(),snapshot ?? undefined);
+  snapshots.resetBaseline();
   let snapshotWork: Promise<void> = Promise.resolve();
   const scheduleSnapshot = () => { snapshotWork = snapshotWork.then(()=>snapshots.saveIfDue()).catch(error=>app.log.error(error,'snapshot failed')); };
   const timer=setInterval(scheduleSnapshot,30_000); timer.unref();

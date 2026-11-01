@@ -21,7 +21,7 @@ export class Store {
   grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
   seq = 0;
   healthy = true;
-  constructor(path: string) {
+  constructor(path: string, deferRebuild=false) {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
     const schemaVersion=Number((this.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version);
@@ -42,7 +42,8 @@ export class Store {
     this.db.exec('PRAGMA user_version=1');
     this.db.exec('COMMIT');
     } catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
-    this.rebuild();
+    if (deferRebuild) this.seq=Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq);
+    else this.rebuild();
   }
   hidden(participantId:string,strokeId:string,revision:number): boolean {
     const row = this.db.prepare('SELECT action FROM moderation_actions WHERE participant_id=? AND stroke_id=? AND revision<=? ORDER BY revision DESC LIMIT 1').get(participantId,strokeId,revision) as {action:string}|undefined;

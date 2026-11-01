@@ -11,6 +11,7 @@ export class Snapshots {
     store.db.exec('CREATE TABLE IF NOT EXISTS snapshots(seq INTEGER NOT NULL,moderation_revision INTEGER NOT NULL,file_path TEXT NOT NULL,checksum TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(seq,moderation_revision))');
     this.lastSeq=store.seq;this.lastRevision=store.revision();this.lastDigest=digest(store.grid);
   }
+  resetBaseline() { this.lastSeq=this.store.seq; this.lastRevision=this.store.revision(); this.lastDigest=digest(this.store.grid); this.lastTime=Date.now(); }
   async saveIfDue(now=Date.now()) {
     if(this.busy) return; const seq=this.store.seq, revision=this.store.revision(), grid=this.store.grid.slice(), checksum=digest(grid);
     if(checksum===this.lastDigest && revision===this.lastRevision) return;

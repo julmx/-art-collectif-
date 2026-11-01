@@ -47,6 +47,6 @@ Les fichiers sous `ops/` préparent un transfert SSH/rsync toutes les 30 minutes
 - Le transfert extérieur, les alertes, l’exercice de restauration et le déploiement Compose n’ont pas été vérifiés dans une infrastructure réelle. La disponibilité, l’espace disque et la rétention doivent être surveillés.
 - Les essais physiques souris, tactile et stylet, le test pilote et les conditions définitives de participation et de réutilisation artistique restent à réaliser ou finaliser.
 - La couverture automatisée ne démontre pas encore tous les cas de reconnexion, de panne disque, de révision de modération et de relecture vidéo. Ne pas considérer la V1 comme validée tant que les cases pertinentes du cahier des charges ne sont pas exécutées.
-- Les snapshots modérés sont utilisés par les exports d’image lorsqu’ils sont compatibles ; le démarrage rejoue actuellement le journal complet.
+- Les snapshots modérés compatibles accélèrent les reconstructions au démarrage et les exports ; un snapshot absent ou invalide est ignoré au profit du journal.
 
 Ne jamais ajouter au dépôt secrets, données réelles de participants, sauvegardes ou exports d’exploitation.
