@@ -18,6 +18,8 @@ it('commits before acknowledgement, handles retries and rebuilds after restart',
     expect(store.submit('p',cmd)).toMatchObject({accepted:true,seq:1,duplicate:false});
     expect(store.submit('p',cmd)).toMatchObject({accepted:true,seq:1,duplicate:true});
     expect(store.submit('p',{...cmd,colorId:2})).toMatchObject({accepted:false,code:'OP_ID_CONFLICT'});
+    expect(store.submit('p',{...cmd,colorId:0})).toMatchObject({accepted:false,code:'OP_ID_CONFLICT'});
+    expect(store.submit('p',{...cmd,opId:randomUUID(),colorId:0})).toMatchObject({accepted:false,code:'INVALID_COLOR'});
     expect(store.submit('p',{...cmd,opId:randomUUID(),partIndex:1,points:[[9,9]]})).toMatchObject({accepted:false,code:'CONTINUITY_ERROR'});
     const end = {...cmd,opId:randomUUID(),partIndex:1,final:true,points:[]};
     expect(store.submit('p',end)).toMatchObject({accepted:true,seq:2});
@@ -50,4 +52,8 @@ it('replays moderation retroactively without moving later contributions', () => 
 
 it('suspend les écritures si la reconstruction après modération échoue',()=>{
  const dir=mkdtempSync(join(tmpdir(),'art-broken-replay-'));const store=new Store(join(dir,'db.sqlite'));try{store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();store.db.prepare("UPDATE project SET status='open'").run();const c:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[1,1]]};store.submit('p',c);store.rebuild=()=>{throw new Error('simulation');};expect(()=>store.moderate('p',c.strokeId,'hide','test')).toThrow();expect(store.healthy).toBe(false);expect(store.submit('p',{...c,opId:randomUUID(),strokeId:randomUUID()})).toMatchObject({accepted:false,code:'STORAGE_UNAVAILABLE'});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+it('ne confirme pas une commande dont la transaction échoue',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'art-write-fail-'));const store=new Store(join(dir,'db.sqlite'));try{store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();store.db.prepare("UPDATE project SET status='open'").run();store.db.exec("CREATE TRIGGER fail_write BEFORE INSERT ON draw_events BEGIN SELECT RAISE(ABORT,'disk failure'); END");const c:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[1,1]]};expect(store.submit('p',c)).toMatchObject({accepted:false,code:'STORAGE_UNAVAILABLE'});expect(store.seq).toBe(0);expect(store.grid[721]).toBe(0);expect(store.db.prepare('SELECT count(*) AS n FROM draw_events').get()?.n).toBe(0);}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });

@@ -9,9 +9,7 @@ function validate(input: unknown): { command?: DrawCommand; code?: string; opId:
   const v = input as Record<string, unknown> | null;
   const opId = typeof v?.opId === 'string' && uuid.test(v.opId) ? v.opId : '';
   if (!v || typeof v !== 'object' || Array.isArray(v) || !opId || typeof v.strokeId !== 'string' || !uuid.test(v.strokeId) || Object.keys(v).sort().join(',') !== 'colorId,final,opId,partIndex,points,size,strokeId,tool' || !Number.isSafeInteger(v.partIndex) || (v.partIndex as number) < 0 || typeof v.final !== 'boolean' || (v.tool !== 'pixel' && v.tool !== 'brush') || !Array.isArray(v.points) || v.points.length > 64 || (!v.points.length && !v.final) || Buffer.byteLength(JSON.stringify(v)) > 16384) return { opId, code:'INVALID_MESSAGE' };
-  if (!Number.isInteger(v.colorId) || (v.colorId as number) < 1 || (v.colorId as number) > 24) return { opId, code:'INVALID_COLOR' };
-  if (!Number.isInteger(v.size) || !SIZES.includes(v.size as typeof SIZES[number]) || (v.tool === 'pixel' && v.size !== 1)) return {opId,code:'INVALID_SIZE'};
-  if (v.points.some(p => !Array.isArray(p) || p.length !== 2 || !Number.isInteger(p[0]) || !Number.isInteger(p[1]) || p[0] < 0 || p[0] >= WIDTH || p[1] < 0 || p[1] >= HEIGHT)) return { opId,code:'INVALID_COORDINATES' };
+  if (typeof v.colorId !== 'number' || typeof v.size !== 'number' || v.points.some(p => !Array.isArray(p) || p.length !== 2 || typeof p[0] !== 'number' || typeof p[1] !== 'number')) return {opId,code:'INVALID_MESSAGE'};
   return {opId,command: {opId,strokeId:v.strokeId as string,partIndex:v.partIndex as number,final:v.final,tool:v.tool,colorId:v.colorId as number,size:v.size as number,points:v.points as DrawCommand['points']}};
 }
 
@@ -84,6 +82,9 @@ export class Store {
     const reject = (code:string): DrawResult => ({opId:c.opId,accepted:false,code});
     if (!this.healthy) return reject('STORAGE_UNAVAILABLE');
     if ((this.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
+    if (!Number.isInteger(c.colorId) || c.colorId<1 || c.colorId>24) return reject('INVALID_COLOR');
+    if (!Number.isInteger(c.size) || !SIZES.includes(c.size as typeof SIZES[number]) || (c.tool==='pixel' && c.size!==1)) return reject('INVALID_SIZE');
+    if (c.points.some(([x,y])=>!Number.isInteger(x)||!Number.isInteger(y)||x<0||x>=WIDTH||y<0||y>=HEIGHT)) return reject('INVALID_COORDINATES');
     // Bound worst-case raster work before committing. Long inputs must be split.
     const maskSize = brushMask(c.size).length;
     let work = c.points.length ? maskSize : 0;
