@@ -47,6 +47,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,snapshot
       return {ok:true,checksum:digest};
     } catch {return reply.code(400).send({error:'INVALID_PNG'});}
   });
+  app.get('/api/admin/config',async(_req,reply)=>{const p=store.db.prepare('SELECT status,palette_json,title,description,participation_terms,started_at,closed_at FROM project WHERE id=1').get() as {status:string;palette_json:string;title:string;description:string;participation_terms:string;started_at:string|null;closed_at:string|null};return reply.header('Cache-Control','no-store').send({status:p.status,palette:JSON.parse(p.palette_json),title:p.title,description:p.description,participationTerms:p.participation_terms,startedAt:p.started_at,closedAt:p.closed_at});});
   app.put('/api/admin/config',async(req,reply)=>{
     const body=req.body as {palette?:unknown;title?:unknown;description?:unknown;participationTerms?:unknown};
     if (!body || !Array.isArray(body.palette) || !validPalette(body.palette) || typeof body.title!=='string' || !body.title.trim() || body.title.length>160 || typeof body.description!=='string' || body.description.length>4000 || typeof body.participationTerms!=='string' || !body.participationTerms.trim() || body.participationTerms.length>20000) return reply.code(400).send({error:'INVALID_CONFIG'});
