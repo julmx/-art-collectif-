@@ -53,3 +53,18 @@ test('la sortie puis la rentrée du pointeur ne relient pas artificiellement le 
  const middle=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(350,300,1,1).data]);const before=await middle();const lastRegion=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(498,298,5,5).data]);const beforeLast=await lastRegion();
  const y=box.y+box.height*300/480;await page.mouse.move(box.x+box.width*200/720,y);await page.mouse.down();await page.mouse.move(box.x-4,y);await page.mouse.move(box.x+box.width*500/720,y);await page.mouse.up();expect(await middle()).toEqual(before);await expect.poll(lastRegion).not.toEqual(beforeLast);
 });
+test('masquer puis restaurer un trait conserve les écritures ultérieures',async({browser})=>{
+ const ctxA=await browser.newContext(),ctxB=await browser.newContext(),ctxAdmin=await browser.newContext();
+ try{
+  const a=await ctxA.newPage(),b=await ctxB.newPage(),admin=await ctxAdmin.newPage();await Promise.all([a.goto('/'),b.goto('/'),admin.goto('/admin.html')]);await Promise.all([expect(a.locator('.status')).toContainText('dessin ouvert'),expect(b.locator('.status')).toContainText('dessin ouvert')]);
+  await admin.getByLabel('Mot de passe').fill('test-password');await admin.getByRole('button',{name:'Se connecter'}).click();await expect(admin.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
+  const ca=a.locator('canvas');await ca.scrollIntoViewIfNeeded();const box=await ca.boundingBox();if(!box)throw new Error('Canvas invisible');const y=box.y+box.height*350.5/480;
+  await a.mouse.move(box.x+box.width*200.5/720,y);await a.mouse.down();await a.mouse.move(box.x+box.width*300.5/720,y);await a.mouse.up();
+  const counts=()=>b.locator('canvas').evaluate((canvas:HTMLCanvasElement)=>{const d=canvas.getContext('2d')!.getImageData(195,346,110,9).data;let red=0,orange=0;for(let i=0;i<d.length;i+=4){if(d[i]===230&&d[i+1]===57&&d[i+2]===70)red++;if(d[i]===240&&d[i+1]===100&&d[i+2]===73)orange++;}return {red,orange};});
+  await expect.poll(async()=> (await counts()).red).toBeGreaterThan(30);
+  const history=await admin.evaluate(async()=>await (await fetch('/api/admin/events?limit=100')).json());const first=history.events.find((event:{command_json:string})=>{const c=JSON.parse(event.command_json);return c.points.some((p:number[])=>p[0]>=198&&p[0]<=202&&p[1]>=348&&p[1]<=352);});expect(first).toBeTruthy();const stroke=JSON.parse(first.command_json).strokeId;
+  await b.getByRole('button',{name:'Couleur 2',exact:true}).click();const cb=b.locator('canvas');await cb.scrollIntoViewIfNeeded();const target=await cb.boundingBox();if(!target)throw new Error('Canvas invisible');await b.mouse.click(target.x+target.width*250.5/720,target.y+target.height*350.5/480);await expect.poll(async()=> (await counts()).orange).toBeGreaterThan(0);
+  await admin.locator('[name=participant]').fill(first.participant_id);await admin.locator('[name=stroke]').fill(stroke);await admin.locator('[name=reason]').fill('essai');await admin.getByRole('button',{name:'Appliquer la décision'}).click();await expect.poll(async()=> (await counts()).red).toBe(0);expect((await counts()).orange).toBeGreaterThan(0);
+  await admin.locator('[name=action]').selectOption('restore');await admin.getByRole('button',{name:'Appliquer la décision'}).click();await expect.poll(async()=> (await counts()).red).toBeGreaterThan(30);expect((await counts()).orange).toBeGreaterThan(0);
+ }finally{await ctxA.close();await ctxB.close();await ctxAdmin.close();}
+});
