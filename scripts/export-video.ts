@@ -9,8 +9,9 @@ import sharp from 'sharp';
 import { WIDTH,HEIGHT,applyCells,paintBrush } from '../shared/raster';
 import type { DrawCommand } from '../shared/protocol';
 
-export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;endSeq?:number;captureAt?:string}) {
+export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;width?:number;height?:number;endSeq?:number;captureAt?:string}) {
   if(!['activity','chronological'].includes(args.mode)||!['raw','moderated'].includes(args.moderation)||!Number.isFinite(args.duration)||args.duration<=0||args.duration>3600||!Number.isInteger(args.fps)||args.fps<1||args.fps>60||!Number.isInteger(args.scale)||args.scale<1||args.scale>8) throw new Error('Paramètres vidéo invalides');
+  if ((args.width !== undefined && args.width !== WIDTH*args.scale) || (args.height !== undefined && args.height !== HEIGHT*args.scale) || (args.captureAt !== undefined && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(args.captureAt) || Number.isNaN(Date.parse(args.captureAt))))) throw new Error('Résolution ou instant de capture invalide');
   const dir=await mkdtemp(join(tmpdir(),'art-video-'));let source:DatabaseSync|undefined,copy:DatabaseSync|undefined;
   try {
     source=new DatabaseSync(resolve(args.database),{readOnly:true}); await backup(source,join(dir,'capture.sqlite')); source.close();source=undefined;
@@ -39,5 +40,5 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
 if (process.argv[1] && resolve(process.argv[1])===resolve(new URL(import.meta.url).pathname)) {
   const options=new Map<string,string>();for(let i=2;i<process.argv.length;i+=2) options.set(process.argv[i],process.argv[i+1]);
   const required=(name:string)=>{const value=options.get(name);if(!value)throw new Error(`${name} requis`);return value;};
-  exportVideo({database:required('--database'),output:required('--output'),mode:(options.get('--mode')||'activity') as 'activity'|'chronological',moderation:(options.get('--moderation')||'moderated') as 'raw'|'moderated',duration:Number(options.get('--duration')||180),fps:Number(options.get('--fps')||25),scale:Number(options.get('--scale')||2),endSeq:options.has('--end-seq')?Number(options.get('--end-seq')):undefined}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});
+  exportVideo({database:required('--database'),output:required('--output'),mode:(options.get('--mode')||'activity') as 'activity'|'chronological',moderation:(options.get('--moderation')||'moderated') as 'raw'|'moderated',duration:Number(options.get('--duration')||180),fps:Number(options.get('--fps')||25),scale:Number(options.get('--scale')||2),width:options.has('--width')?Number(options.get('--width')):undefined,height:options.has('--height')?Number(options.get('--height')):undefined,captureAt:options.get('--capture-at'),endSeq:options.has('--end-seq')?Number(options.get('--end-seq')):undefined}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});
 }
