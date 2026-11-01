@@ -48,3 +48,8 @@ test('interface privée : connexion et consultation de l’historique',async({pa
   await page.getByRole('button',{name:'Se déconnecter'}).click();
   await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
 });
+test('la sortie puis la rentrée du pointeur ne relient pas artificiellement le trait',async({page})=>{
+ await page.goto('/');await expect(page.locator('.status')).toContainText('dessin ouvert');const canvas=page.locator('canvas');await canvas.scrollIntoViewIfNeeded();const box=await canvas.boundingBox();if(!box)throw new Error('Canvas invisible');
+ const middle=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(350,300,1,1).data]);const before=await middle();const lastRegion=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(498,298,5,5).data]);const beforeLast=await lastRegion();
+ const y=box.y+box.height*300/480;await page.mouse.move(box.x+box.width*200/720,y);await page.mouse.down();await page.mouse.move(box.x-4,y);await page.mouse.move(box.x+box.width*500/720,y);await page.mouse.up();expect(await middle()).toEqual(before);await expect.poll(lastRegion).not.toEqual(beforeLast);
+});
