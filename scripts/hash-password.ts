@@ -1,0 +1,2 @@
+import {randomBytes,scryptSync} from 'node:crypto';
+const chunks:Buffer[]=[];for await(const chunk of process.stdin)chunks.push(Buffer.from(chunk));const password=Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/,'');if(password.length<16||password.length>512)throw new Error('Mot de passe : entre 16 et 512 caractères');const salt=randomBytes(16);process.stdout.write(`${salt.toString('hex')}:${scryptSync(password,salt,64).toString('hex')}\n`);
