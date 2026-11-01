@@ -17,7 +17,7 @@ export class CollaborationClient {
   private connected = false;
   private status = 'draft';
   private palette: string[] = [];
-  constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[]) => void) {}
+  constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void) {}
   async connect() {
     const response = await fetch('/api/session',{method:'POST',credentials:'same-origin'});
     if (!response.ok) throw new Error('Session indisponible');
@@ -25,18 +25,18 @@ export class CollaborationClient {
     socket.on('connect',()=>{ this.connected=true; this.ready=false; this.emit(); });
     socket.on('disconnect',()=>{ this.connected=false; this.ready=false; for (const p of this.pending) p.sent=false; this.emit(); });
     socket.on('canvas:state',(state:State)=>this.install(state));
-    socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state); });
+    socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state,true); });
     socket.on('project:status',(message:{status:string})=>{ this.status=message.status; this.emit(); });
     socket.on('draw:applied',(update:Update)=>this.apply(update));
     socket.connect();
   }
-  submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open') return false; this.pending.push({command,sent:false,preview:true}); this.emit(); this.flush(); return true; }
-  private install(state:State) {
+  submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open' || this.pending.length >= 256) return false; this.pending.push({command,sent:false,preview:true}); this.emit(); this.flush(); return true; }
+  private install(state:State, reset=false) {
     if (state.grid.length !== WIDTH * HEIGHT || !Number.isSafeInteger(state.seq)) { this.socket?.disconnect(); return; }
     this.confirmed = Uint8Array.from(state.grid); this.seq=state.seq; this.revision=state.moderationRevision; this.status=state.status; this.palette=state.palette; this.ready=true;
     this.pending=this.pending.filter(p=>p.seq === undefined || p.seq > this.seq);
     for (const p of this.pending) p.sent=false;
-    this.emit(); this.flush();
+    this.emit(reset); this.flush();
   }
   private apply(update:Update) {
     if (!this.ready) return;
@@ -59,9 +59,9 @@ export class CollaborationClient {
       this.emit(); this.flush();
     });
   }
-  private emit() {
+  private emit(reset=false) {
     const display=this.confirmed.slice();
     for (const {command:c,preview} of this.pending) if (preview) applyCells(display,paintBrush(c.points,c.size,c.colorId));
-    this.changed(display,this.ready && this.connected && this.status==='open',this.connected ? this.status : 'disconnected',this.palette);
+    this.changed(display,this.ready && this.connected && this.status==='open',this.connected ? this.status : 'disconnected',this.palette,reset);
   }
 }
