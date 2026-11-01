@@ -20,7 +20,7 @@ Configurer la valeur affichée dans `ADMIN_PASSWORD_HASH` dans l’environnement
 
 ## Déploiement prévu
 
-Le dépôt fournit Docker Compose et Caddy. Créer un fichier `.env` privé, non versionné, contenant `DOMAIN`, `ADMIN_PASSWORD_HASH` et `CODE_REVISION` (SHA exact du code déployé). Faire pointer le domaine vers le VPS et autoriser les ports 80 et 443. `docker compose up -d --build` crée les services et les volumes persistants. Ne pas exposer directement le port du serveur Node. Cette configuration n’a pas encore été testée dans cet environnement, où Docker Compose n’est pas disponible.
+Le dépôt fournit Docker Compose et Caddy. Créer un fichier `.env` privé, non versionné, contenant `DOMAIN`, `ADMIN_PASSWORD_HASH` et `CODE_REVISION` (SHA exact du code déployé). Faire pointer le domaine vers le VPS et autoriser les ports 80 et 443. `docker compose up -d --build` crée les services et les volumes persistants. Ne pas exposer directement le port du serveur Node. La configuration NAS a été construite et testée localement avec Docker Compose classique ; elle reste à vérifier sur le NAS et la configuration VPS reste à valider en production.
 
 Le cookie de participation, aléatoire et HttpOnly, expire après 90 jours ; seule son empreinte est enregistrée. La session d’administration expire après huit heures et disparaît au redémarrage. Le seuil chromatique retenu est un écart d’au moins 40 entre les composantes RGB extrêmes. Les limites provisoires sont 20 commandes/s par session, rafale de 40 et coût estimé maximal de 400 000 cellules par commande ; elles doivent être confirmées par l’essai de charge complet. Aucun quota cumulé artistique n’est appliqué. Les journaux de sécurité et leur rétention restent à définir avant le lancement.
 
@@ -50,3 +50,13 @@ Les fichiers sous `ops/` préparent un transfert SSH/rsync toutes les 30 minutes
 - Les snapshots modérés compatibles accélèrent les reconstructions au démarrage et les exports ; un snapshot absent ou invalide est ignoré au profit du journal.
 
 Ne jamais ajouter au dépôt secrets, données réelles de participants, sauvegardes ou exports d’exploitation.
+
+## Essai sur un NAS Synology
+
+Le fichier `docker-compose.nas.yml` prépare un environnement de développement séparé, avec des volumes propres et HTTPS local sur le port 8443. Copier le dépôt sur le NAS, créer un fichier privé `.env.nas` avec `DOMAIN` (adresse IP ou nom DNS local du NAS, sans port), `ADMIN_PASSWORD_HASH` et `CODE_REVISION`, puis démarrer depuis le dossier du projet :
+
+```bash
+docker compose --env-file .env.nas -p artcollectif-test -f docker-compose.nas.yml up -d --build
+```
+
+Selon la version de Container Manager, la commande peut être `docker-compose` à la place de `docker compose`. Consulter `https://ADRESSE_DU_NAS:8443/` et `/admin.html`. Caddy crée une autorité de certification locale : le navigateur du poste de test doit reconnaître son certificat racine avant d’accepter la connexion. Ce certificat public peut être récupéré depuis le conteneur Caddy avec `docker compose --env-file .env.nas -p artcollectif-test -f docker-compose.nas.yml cp web:/data/caddy/pki/authorities/local/root.crt ./root.crt`. Ne transférer que le certificat public, jamais la clé privée de l’autorité. Cette configuration ne publie pas automatiquement le service sur Internet et ne remplace pas une sauvegarde physiquement extérieure.

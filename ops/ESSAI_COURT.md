@@ -13,3 +13,5 @@ Le même jour, `npx tsx scripts/load-full.ts 10` a utilisé 50 clients dans un p
 ## Limites et rafale locales
 
 `npx tsx scripts/load-boundaries.ts` a accepté un lot de 64 points avec un pinceau de 21, rejeté cinq cas invalides (couleur, taille, coordonnée, conflit d’identifiant et nombre de points), puis accepté 100 commandes espacées de 50 ms avec un p95 de 11,42 ms. Cet essai utilise un seul client local et ne démontre pas le comportement à cette cadence pour 50 clients ni la tenue dans l’infrastructure de production.
+
+Le 2 novembre, deux nouvelles exécutions mixtes courtes sur le code courant ont toutes deux conservé 5 049 commandes et retrouvé la convergence et le rejeu. La première a mesuré un p95 de 788,40 ms, 93 retransmissions et un pic de 1 143 commandes en attente ; elle échoue au seuil de 500 ms. La seconde, lancée après vérification de l’activité locale, a mesuré un p95 de 43,57 ms, aucune retransmission et un pic de 50 commandes en attente. La cause de cet écart n’est pas établie : ces résultats ne prouvent pas la stabilité sous charge prolongée.
