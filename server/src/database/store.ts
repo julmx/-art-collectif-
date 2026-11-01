@@ -36,7 +36,13 @@ export class Store {
       CREATE INDEX IF NOT EXISTS draw_stroke ON draw_events(participant_id,stroke_id);
       CREATE TABLE IF NOT EXISTS terms_history (id INTEGER PRIMARY KEY, terms TEXT NOT NULL, effective_after_seq INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL UNIQUE, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('hide','restore')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS moderation_stroke ON moderation_actions(participant_id,stroke_id,revision);`);
+      CREATE INDEX IF NOT EXISTS moderation_stroke ON moderation_actions(participant_id,stroke_id,revision);
+      CREATE TRIGGER IF NOT EXISTS draw_events_no_update BEFORE UPDATE ON draw_events BEGIN SELECT RAISE(ABORT,'draw_events is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS draw_events_no_delete BEFORE DELETE ON draw_events BEGIN SELECT RAISE(ABORT,'draw_events is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS moderation_no_update BEFORE UPDATE ON moderation_actions BEGIN SELECT RAISE(ABORT,'moderation_actions is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS moderation_no_delete BEFORE DELETE ON moderation_actions BEGIN SELECT RAISE(ABORT,'moderation_actions is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS terms_no_update BEFORE UPDATE ON terms_history BEGIN SELECT RAISE(ABORT,'terms_history is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS terms_no_delete BEFORE DELETE ON terms_history BEGIN SELECT RAISE(ABORT,'terms_history is append-only'); END;`);
     const columns = new Set((this.db.prepare('PRAGMA table_info(project)').all() as {name:string}[]).map(c=>c.name));
     for (const [name,type] of Object.entries({base_image_path:'TEXT',base_image_checksum:'TEXT',title:"TEXT NOT NULL DEFAULT 'Art Collectif'",description:"TEXT NOT NULL DEFAULT ''",participation_terms:"TEXT NOT NULL DEFAULT ''",started_at:'TEXT',closed_at:'TEXT',width:'INTEGER NOT NULL DEFAULT 720 CHECK(width=720)',height:'INTEGER NOT NULL DEFAULT 480 CHECK(height=480)',event_format_version:"TEXT NOT NULL DEFAULT '1'",raster_version:"TEXT NOT NULL DEFAULT '1'"})) if (!columns.has(name)) this.db.exec(`ALTER TABLE project ADD COLUMN ${name} ${type}`);
     this.db.prepare('INSERT OR IGNORE INTO project(id,status,palette_json) VALUES(1,?,?)').run('draft',JSON.stringify(PALETTE));

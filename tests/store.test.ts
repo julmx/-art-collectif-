@@ -16,6 +16,9 @@ it('commits before acknowledgement, handles retries and rebuilds after restart',
     store.db.prepare("UPDATE project SET status='open'").run();
     const cmd: DrawCommand = {opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:false,tool:'pixel',colorId:1,size:1,points:[[1,1],[2,1]]};
     expect(store.submit('p',cmd)).toMatchObject({accepted:true,seq:1,duplicate:false});
+    expect(()=>store.db.prepare('UPDATE draw_events SET color_id=2 WHERE seq=1').run()).toThrow();
+    expect(()=>store.db.prepare('DELETE FROM draw_events WHERE seq=1').run()).toThrow();
+
     expect(store.submit('p',cmd)).toMatchObject({accepted:true,seq:1,duplicate:true});
     expect(store.submit('p',{...cmd,colorId:2})).toMatchObject({accepted:false,code:'OP_ID_CONFLICT'});
     expect(store.submit('p',{...cmd,colorId:0})).toMatchObject({accepted:false,code:'OP_ID_CONFLICT'});
