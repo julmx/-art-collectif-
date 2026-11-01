@@ -24,7 +24,12 @@ export class Store {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
+    const schemaVersion=Number((this.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version);
+    if(schemaVersion>1) throw new Error('Database schema is newer than this application');
+    if ((this.db.prepare('PRAGMA foreign_keys').get() as {foreign_keys:number}).foreign_keys !== 1) throw new Error('SQLite foreign keys unavailable');
     if ((this.db.prepare('PRAGMA journal_mode').get() as {journal_mode:string}).journal_mode !== 'wal' || (this.db.prepare('PRAGMA synchronous').get() as {synchronous:number}).synchronous !== 2) throw new Error('SQLite durability settings unavailable');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
     this.db.exec(`CREATE TABLE IF NOT EXISTS project (id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL CHECK(status IN ('draft','open','paused','closed')), palette_json TEXT NOT NULL, moderation_revision INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS participants (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS draw_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT NOT NULL, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, part_index INTEGER NOT NULL CHECK(part_index>=0), final INTEGER NOT NULL CHECK(final IN (0,1)), tool TEXT NOT NULL CHECK(tool IN ('pixel','brush')), color_id INTEGER NOT NULL CHECK(color_id BETWEEN 1 AND 24), size INTEGER NOT NULL CHECK(size IN (1,3,5,9,15,21)), points_json TEXT NOT NULL, command_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(participant_id,op_id), UNIQUE(participant_id,stroke_id,part_index));
@@ -32,8 +37,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL UNIQUE, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('hide','restore')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS moderation_stroke ON moderation_actions(participant_id,stroke_id,revision);`);
     const columns = new Set((this.db.prepare('PRAGMA table_info(project)').all() as {name:string}[]).map(c=>c.name));
-    for (const [name,type] of Object.entries({base_image_path:'TEXT',base_image_checksum:'TEXT',title:"TEXT NOT NULL DEFAULT 'Art Collectif'",description:"TEXT NOT NULL DEFAULT ''",participation_terms:"TEXT NOT NULL DEFAULT ''",started_at:'TEXT',closed_at:'TEXT'})) if (!columns.has(name)) this.db.exec(`ALTER TABLE project ADD COLUMN ${name} ${type}`);
+    for (const [name,type] of Object.entries({base_image_path:'TEXT',base_image_checksum:'TEXT',title:"TEXT NOT NULL DEFAULT 'Art Collectif'",description:"TEXT NOT NULL DEFAULT ''",participation_terms:"TEXT NOT NULL DEFAULT ''",started_at:'TEXT',closed_at:'TEXT',width:'INTEGER NOT NULL DEFAULT 720 CHECK(width=720)',height:'INTEGER NOT NULL DEFAULT 480 CHECK(height=480)',event_format_version:"TEXT NOT NULL DEFAULT '1'",raster_version:"TEXT NOT NULL DEFAULT '1'"})) if (!columns.has(name)) this.db.exec(`ALTER TABLE project ADD COLUMN ${name} ${type}`);
     this.db.prepare('INSERT OR IGNORE INTO project(id,status,palette_json) VALUES(1,?,?)').run('draft',JSON.stringify(PALETTE));
+    this.db.exec('PRAGMA user_version=1');
+    this.db.exec('COMMIT');
+    } catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
     this.rebuild();
   }
   hidden(participantId:string,strokeId:string,revision:number): boolean {

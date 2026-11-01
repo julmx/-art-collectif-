@@ -10,6 +10,8 @@ it('commits before acknowledgement, handles retries and rebuilds after restart',
   const dir = mkdtempSync(join(tmpdir(),'art-store-')), path = join(dir,'db.sqlite');
   let store = new Store(path);
   try {
+    expect(store.db.prepare('PRAGMA user_version').get()?.user_version).toBe(1);
+    expect(store.db.prepare('PRAGMA foreign_keys').get()?.foreign_keys).toBe(1);
     store.db.prepare('INSERT INTO participants VALUES(?,?,?,?)').run('p','hash','now','now');
     store.db.prepare("UPDATE project SET status='open'").run();
     const cmd: DrawCommand = {opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:false,tool:'pixel',colorId:1,size:1,points:[[1,1],[2,1]]};
