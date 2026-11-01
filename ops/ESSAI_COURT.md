@@ -9,3 +9,7 @@ Cet essai sert uniquement à détecter tôt des limites. Il ne couvre ni la char
 ## Charge mixte, processus séparés
 
 Le même jour, `npx tsx scripts/load-full.ts 10` a utilisé 50 clients dans un processus distinct du serveur, des pinceaux variés dont des lots de 64 points en taille 21, une reconnexion et une sauvegarde SQLite locale. Après regroupement des écritures en transactions durables, 5 049 commandes ont été envoyées et acquittées, sans refus ni expiration ; p95 : 58,27 ms, pic de 83 commandes en attente, mémoire RSS maximale du serveur : 329 220 096 octets. Les 50 grilles resynchronisées et le rejeu concordaient ; la base et son WAL occupaient 8 481 992 octets. L’essai a duré 10 secondes et ne valide ni les 30 minutes de recette ni le VPS cible, le stockage extérieur, les rafales ou les messages invalides.
+
+## Limites et rafale locales
+
+`npx tsx scripts/load-boundaries.ts` a accepté un lot de 64 points avec un pinceau de 21, rejeté cinq cas invalides (couleur, taille, coordonnée, conflit d’identifiant et nombre de points), puis accepté 100 commandes espacées de 50 ms avec un p95 de 11,42 ms. Cet essai utilise un seul client local et ne démontre pas le comportement à cette cadence pour 50 clients ni la tenue dans l’infrastructure de production.
