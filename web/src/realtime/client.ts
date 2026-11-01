@@ -26,6 +26,7 @@ export class CollaborationClient {
     socket.on('disconnect',()=>{ this.connected=false; this.ready=false; for (const p of this.pending) p.sent=false; this.emit(); });
     socket.on('canvas:state',(state:State)=>this.install(state));
     socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state,true); });
+    socket.on('project:updated',()=>window.dispatchEvent(new Event('project:updated')));
     socket.on('project:status',(message:{status:string})=>{ this.status=message.status; this.emit(); });
     socket.on('draw:applied',(update:Update)=>this.apply(update));
     socket.connect();

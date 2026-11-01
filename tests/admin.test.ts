@@ -34,7 +34,9 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     const overlay=await app.inject({method:'GET',url:'/api/admin/export/overlay.png',headers:{cookie}}); const rgba=await sharp(overlay.rawPayload).raw().toBuffer(); expect(rgba[3]).toBe(0);
     expect((await app.inject({method:'GET',url:'/api/admin/image.png?seq=0&at=2026-01-01T00:00:00Z',headers:{cookie}})).statusCode).toBe(400);
 
-    expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:config})).statusCode).toBe(409);
+    expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:{...config,participationTerms:'Nouvelles conditions'}})).statusCode).toBe(200);
+    const changed=[...PALETTE]; [changed[0],changed[1]]=[changed[1],changed[0]];
+    expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:{...config,palette:changed}})).statusCode).toBe(409);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed'}})).statusCode).toBe(200);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(409);
     expect((await app.inject({method:'POST',url:'/api/admin/logout',headers:auth})).statusCode).toBe(200);

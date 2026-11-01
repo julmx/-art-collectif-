@@ -50,8 +50,14 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,snapshot
   app.put('/api/admin/config',async(req,reply)=>{
     const body=req.body as {palette?:unknown;title?:unknown;description?:unknown;participationTerms?:unknown};
     if (!body || !Array.isArray(body.palette) || !validPalette(body.palette) || typeof body.title!=='string' || !body.title.trim() || body.title.length>160 || typeof body.description!=='string' || body.description.length>4000 || typeof body.participationTerms!=='string' || !body.participationTerms.trim() || body.participationTerms.length>20000) return reply.code(400).send({error:'INVALID_CONFIG'});
-    const result=store.db.prepare("UPDATE project SET palette_json=?,title=?,description=?,participation_terms=? WHERE id=1 AND status='draft'").run(JSON.stringify(body.palette),body.title,body.description,body.participationTerms);
-    if(!result.changes) return reply.code(409).send({error:'PROJECT_LOCKED'}); return {ok:true};
+    const current=store.db.prepare('SELECT status,palette_json,participation_terms FROM project WHERE id=1').get() as {status:string;palette_json:string;participation_terms:string};
+    if(current.status!=='draft' && JSON.stringify((JSON.parse(current.palette_json) as string[]).map(c=>c.toLowerCase()))!==JSON.stringify((body.palette as string[]).map(c=>c.toLowerCase()))) return reply.code(409).send({error:'PROJECT_LOCKED'});
+    store.db.exec('BEGIN IMMEDIATE');try {
+      store.db.prepare('UPDATE project SET palette_json=?,title=?,description=?,participation_terms=? WHERE id=1').run(current.status==='draft'?JSON.stringify(body.palette):current.palette_json,body.title,body.description,body.participationTerms);
+      if(current.participation_terms!==body.participationTerms) store.db.prepare('INSERT INTO terms_history(terms,effective_after_seq,created_at) VALUES(?,?,?)').run(body.participationTerms,store.seq,new Date().toISOString());
+      store.db.exec('COMMIT');
+    } catch(error){store.db.exec('ROLLBACK');throw error;}
+    io.emit('project:updated');return {ok:true};
   });
   app.post('/api/admin/status',async(req,reply)=>{
     const next=(req.body as {status?:unknown})?.status; const p=store.db.prepare('SELECT * FROM project WHERE id=1').get() as {status:string;base_image_path:string|null;palette_json:string;participation_terms:string;started_at:string|null};

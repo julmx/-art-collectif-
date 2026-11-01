@@ -45,4 +45,5 @@ document.querySelector('#zoom-in')!.addEventListener('click',()=>{ zoom=Math.min
 document.querySelector('#info')!.addEventListener('click',()=>document.querySelector<HTMLDialogElement>('#about')!.showModal());
 function refreshProject() { const background = new Image(); background.onload = () => { const buffer=document.createElement('canvas'); buffer.width=WIDTH; buffer.height=HEIGHT; const context=buffer.getContext('2d')!; context.drawImage(background,0,0); base=context.getImageData(0,0,WIDTH,HEIGHT).data; render(); }; background.src='/api/base.png';
 fetch('/api/project').then(r=>r.ok?r.json():null).then(project=>{ if(!project) return; document.querySelector('.intro > p')!.textContent=project.description; document.title=project.title; document.querySelector('.brand')!.lastChild!.textContent=' '+project.title.toUpperCase(); document.querySelector('#about p')!.textContent=project.participationTerms; }).catch(()=>{}); }
+window.addEventListener('project:updated',refreshProject);
 refreshProject(); render(); transform();
