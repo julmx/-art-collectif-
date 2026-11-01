@@ -11,7 +11,7 @@ import type { Store } from '../database/store';
 import { registerExports } from './exports';
 import type { Snapshots } from '../renderer/snapshots';
 
-export function registerAdmin(app:FastifyInstance,store:Store,io:Server,snapshots:Snapshots,options:{dataDir:string;passwordHash?:string;secureCookie:boolean; state:()=>unknown}) {
+export function registerAdmin(app:FastifyInstance,store:Store,io:Server,snapshots:Snapshots,options:{dataDir:string;dbPath:string;passwordHash?:string;secureCookie:boolean; state:()=>unknown}) {
   const sessions=new Map<string,number>(), attempts=new Map<string,{count:number;until:number}>();
   const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
   const verify=(password:string) => {
@@ -21,7 +21,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,snapshot
   };
   const authorized=(token:string|undefined) => { if (!token) return false; const expiry=sessions.get(hash(token)); return !!expiry && expiry>Date.now(); };
   app.addHook('preHandler',async (req,reply)=>{ if (req.url.startsWith('/api/admin/') && req.url.split('?')[0] !== '/api/admin/login' && !authorized(req.cookies.art_admin)) return reply.code(401).send({error:'UNAUTHENTICATED'}); });
-  registerExports(app,store,snapshots);
+  registerExports(app,store,snapshots,options.dbPath);
   app.post('/api/admin/login',async (req,reply)=>{
     const attempt=attempts.get(req.ip); if(attempt && attempt.until>Date.now() && attempt.count>=5) return reply.code(429).send({error:'RATE_LIMITED'});
     const password=(req.body as {password?:unknown})?.password;

@@ -2,14 +2,14 @@ import { it, expect } from 'vitest';
 import { mkdtempSync,rmSync,mkdirSync,writeFileSync,symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes,scryptSync } from 'node:crypto';
+import { randomBytes,randomUUID,scryptSync } from 'node:crypto';
 import sharp from 'sharp';
 import { createApp } from '../server/src/app';
 import { PALETTE } from '../shared/palette';
 
 it('protège la configuration, valide le fond et verrouille les paramètres à l’ouverture',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'art-admin-')), salt=randomBytes(16), password='test-password', passwordHash=`${salt.toString('hex')}:${scryptSync(password,salt,64).toString('hex')}`;
-  const {app}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false,adminPasswordHash:passwordHash});
+  const {app,store}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false,adminPasswordHash:passwordHash});
   const headers={origin:'http://localhost:4173'};
   try {
     for (const url of ['/api/admin/events','/api/admin/image.png','/api/admin/export/final.png','/api/admin/export/overlay.png','/api/admin/export/events.jsonl','/api/admin/export/moderation.jsonl','/api/admin/archives','/api/admin/archives/export']) expect((await app.inject({method:'GET',url})).statusCode).toBe(401);
@@ -28,6 +28,9 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     const config={palette:PALETTE,title:'Projet',description:'Description',participationTerms:'Conditions de participation'};
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:config})).statusCode).toBe(200);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(200);
+    store.db.prepare("INSERT INTO participants VALUES('test-participant','private-hash','now','now')").run();store.submit('test-participant',{opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[2,2]]});
+    const exportedEvents=await app.inject({method:'GET',url:'/api/admin/export/events.jsonl',headers:{cookie}});expect(exportedEvents.statusCode).toBe(200);expect(exportedEvents.body).not.toContain('private-hash');expect(JSON.parse(exportedEvents.body.trim())).toMatchObject({seq:1,participantId:'test-participant'});
+
     const exported=await app.inject({method:'GET',url:'/api/admin/image.png?seq=0&moderation=raw',headers:{cookie}});
     expect(exported.statusCode).toBe(200); expect(exported.headers['x-art-sequence']).toBe('0');
     const image=await sharp(exported.rawPayload).raw().toBuffer({resolveWithObject:true}); expect([...image.data.subarray(0,3)]).toEqual([100,100,100]);

@@ -1,12 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { DatabaseSync, backup } from 'node:sqlite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import sharp, { type Sharp } from 'sharp';
 import { WIDTH,HEIGHT } from '../../../shared/raster';
 import type { Store } from '../database/store';
 import type { Snapshots } from '../renderer/snapshots';
 
 type Query={seq?:string;at?:string;moderation?:string;scale?:string};
-export function registerExports(app:FastifyInstance,store:Store,snapshots:Snapshots) {
+export function registerExports(app:FastifyInstance,store:Store,snapshots:Snapshots,dbPath:string) {
+  let active=0;
   async function image(req:FastifyRequest,reply:FastifyReply,overlayOnly:boolean) {
     const q=req.query as Query, p=store.db.prepare('SELECT palette_json,base_image_path,moderation_revision FROM project WHERE id=1').get() as {palette_json:string;base_image_path:string|null;moderation_revision:number};
     const mode=q.moderation || 'moderated', scale=q.scale===undefined?1:Number(q.scale);
@@ -26,9 +31,21 @@ export function registerExports(app:FastifyInstance,store:Store,snapshots:Snapsh
     const output=scale===1 ? native : await sharp(native).resize(WIDTH*scale,HEIGHT*scale,{kernel:'nearest'}).png().toBuffer();
     return reply.header('Cache-Control','no-store').header('X-Art-Sequence',target).header('X-Art-Moderation-Revision',p.moderation_revision).header('X-Art-Moderation',mode).type('image/png').send(output);
   }
-  app.get('/api/admin/image.png',(req,reply)=>image(req,reply,false));
-  app.get('/api/admin/export/final.png',(req,reply)=>image(req,reply,false));
-  app.get('/api/admin/export/overlay.png',(req,reply)=>image(req,reply,true));
-  app.get('/api/admin/export/events.jsonl',async(_req,reply)=>{ const rows=store.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events ORDER BY seq').all() as {seq:number;participant_id:string;command_json:string;created_at:string}[]; return reply.header('Cache-Control','no-store').type('application/x-ndjson').send(rows.map(row=>JSON.stringify({seq:row.seq,participantId:row.participant_id,...JSON.parse(row.command_json),createdAt:row.created_at})).join('\n')+(rows.length?'\n':'')); });
-  app.get('/api/admin/export/moderation.jsonl',async(_req,reply)=>{const rows=store.db.prepare('SELECT revision,participant_id,stroke_id,action,reason,created_at FROM moderation_actions ORDER BY revision').all(); return reply.header('Cache-Control','no-store').type('application/x-ndjson').send(rows.map(row=>JSON.stringify(row)).join('\n')+(rows.length?'\n':''));});
+  const imageRoute=(overlay:boolean)=>async(req:FastifyRequest,reply:FastifyReply)=>{if(active>=2)return reply.code(429).send({error:'EXPORT_BUSY'});active++;try{return await image(req,reply,overlay);}finally{active--;}};
+  app.get('/api/admin/image.png',imageRoute(false));
+  app.get('/api/admin/export/final.png',imageRoute(false));
+  app.get('/api/admin/export/overlay.png',imageRoute(true));
+  async function jsonl(reply:FastifyReply,kind:'events'|'moderation') {
+    if(active>=2)return reply.code(429).send({error:'EXPORT_BUSY'});active++;
+    let dir:string|undefined,source:DatabaseSync|undefined,copy:DatabaseSync|undefined,handedOff=false;
+    try {
+      dir=await mkdtemp(join(tmpdir(),'art-jsonl-'));source=new DatabaseSync(dbPath,{readOnly:true});await backup(source,join(dir,'capture.sqlite'));source.close();source=undefined;copy=new DatabaseSync(join(dir,'capture.sqlite'),{readOnly:true});
+      const database=copy, directory=dir;
+      function* rows(){if(kind==='events'){for(const row of database.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events ORDER BY seq').iterate() as IterableIterator<{seq:number;participant_id:string;command_json:string;created_at:string}>)yield JSON.stringify({seq:row.seq,participantId:row.participant_id,...JSON.parse(row.command_json),createdAt:row.created_at})+'\n';}else for(const row of database.prepare('SELECT revision,participant_id,stroke_id,action,reason,created_at FROM moderation_actions ORDER BY revision').iterate())yield JSON.stringify(row)+'\n';}
+      const stream=Readable.from(rows()),cleanup=()=>{if(!handedOff)return;handedOff=false;database.close();void rm(directory,{recursive:true,force:true});active--;};handedOff=true;stream.once('close',cleanup);stream.once('error',cleanup);reply.raw.once('close',()=>stream.destroy());
+      return reply.header('Cache-Control','no-store').type('application/x-ndjson').send(stream);
+    } catch(error){source?.close();if(!handedOff){copy?.close();if(dir)await rm(dir,{recursive:true,force:true});active--;}throw error;}
+  }
+  app.get('/api/admin/export/events.jsonl',(_req,reply)=>jsonl(reply,'events'));
+  app.get('/api/admin/export/moderation.jsonl',(_req,reply)=>jsonl(reply,'moderation'));
 }
