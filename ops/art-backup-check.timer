@@ -1,0 +1,7 @@
+[Unit]
+Description=Surveillance des sauvegardes Art Collectif
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target

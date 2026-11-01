@@ -1,0 +1,7 @@
+[Unit]
+Description=Vérification de la sauvegarde extérieure Art Collectif
+After=network-online.target
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/art-collectif-backup.env
+ExecStart=/bin/bash ${PROJECT_DIR}/ops/check-backup.sh

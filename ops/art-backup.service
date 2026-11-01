@@ -1,0 +1,9 @@
+[Unit]
+Description=Sauvegarde extérieure Art Collectif
+After=network-online.target docker.service
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/art-collectif-backup.env
+ExecStart=/bin/bash ${PROJECT_DIR}/ops/backup-offsite.sh
+Restart=on-failure
+RestartSec=120
