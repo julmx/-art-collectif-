@@ -16,7 +16,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const snapshots = new Snapshots(store,join(dirname(options.dbPath),'snapshots'));
   const snapshot = await snapshots.latest(store.seq,store.revision());
   store.grid=store.replay(store.seq,'moderated',store.revision(),snapshot ?? undefined);
-  snapshots.resetBaseline();
+  snapshots.resetBaseline(snapshot);
   let snapshotWork: Promise<void> = Promise.resolve(), snapshotPending=false;
   const scheduleSnapshot = () => { if(snapshotPending)return; snapshotPending=true; snapshotWork=snapshots.saveIfDue().catch(error=>app.log.error(error,'snapshot failed')).finally(()=>{snapshotPending=false;}); };
   const timer=setInterval(scheduleSnapshot,30_000); timer.unref();
@@ -31,7 +31,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     if (!participant) { const token = randomBytes(32).toString('hex'), now = new Date().toISOString(); participant = {id:randomUUID()}; store.db.prepare('INSERT INTO participants(id,token_hash,created_at,last_seen_at) VALUES(?,?,?,?)').run(participant.id,hash(token),now,now); reply.setCookie('art_session',token,{httpOnly:true,secure:options.secureCookie !== false,sameSite:'strict',path:'/',maxAge:90*24*60*60}); }
     return {ok:true};
   });
-  io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); socket.data.participantId = participant.id; next(); });
+  io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); try { store.db.prepare('UPDATE participants SET last_seen_at=? WHERE id=?').run(new Date().toISOString(),participant.id); } catch {return next(new Error('STORAGE_UNAVAILABLE'));} socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
   registerAdmin(app,store,io,snapshots,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};

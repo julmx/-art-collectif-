@@ -11,7 +11,7 @@ export class Snapshots {
     store.db.exec('CREATE TABLE IF NOT EXISTS snapshots(seq INTEGER NOT NULL,moderation_revision INTEGER NOT NULL,file_path TEXT NOT NULL,checksum TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(seq,moderation_revision))');
     this.lastSeq=store.seq;this.lastRevision=store.revision();this.lastDigest=digest(store.grid);
   }
-  resetBaseline() { this.lastSeq=this.store.seq; this.lastRevision=this.store.revision(); this.lastDigest=digest(this.store.grid); this.lastTime=Date.now(); }
+  resetBaseline(snapshot?:{seq:number;grid:Uint8Array;createdAt:string}|null) { this.lastSeq=snapshot?.seq ?? 0; this.lastRevision=snapshot ? this.store.revision() : 0; this.lastDigest=digest(snapshot?.grid ?? new Uint8Array(WIDTH*HEIGHT)); this.lastTime=snapshot ? Date.parse(snapshot.createdAt) : Date.now(); }
   async saveIfDue(now=Date.now()) {
     if(this.busy) return; const seq=this.store.seq, revision=this.store.revision(), grid=this.store.grid.slice(), checksum=digest(grid);
     if(checksum===this.lastDigest && revision===this.lastRevision) return;
@@ -26,9 +26,9 @@ export class Snapshots {
       for(const item of old){this.store.db.prepare('DELETE FROM snapshots WHERE seq=? AND moderation_revision=?').run(item.seq,item.moderation_revision);if(resolve(item.file_path).startsWith(resolve(this.directory)+'/')) await unlink(item.file_path).catch(()=>{});}
     } finally {this.busy=false;}
   }
-  async latest(target:number,revision:number):Promise<{seq:number;grid:Uint8Array}|null> {
-    const rows=this.store.db.prepare('SELECT seq,file_path,checksum FROM snapshots WHERE seq<=? AND moderation_revision=? ORDER BY seq DESC').all(target,revision) as {seq:number;file_path:string;checksum:string}[];
-    for(const row of rows) try {if(!resolve(row.file_path).startsWith(resolve(this.directory)+'/'))continue;const data=await readFile(row.file_path);if(digest(data)!==row.checksum)continue;const grid=gunzipSync(data,{maxOutputLength:WIDTH*HEIGHT});if(grid.length!==WIDTH*HEIGHT||grid.some(v=>v>24))continue;return {seq:row.seq,grid:new Uint8Array(grid)};} catch { /* fall back to an older snapshot or replay */ }
+  async latest(target:number,revision:number):Promise<{seq:number;grid:Uint8Array;createdAt:string}|null> {
+    const rows=this.store.db.prepare('SELECT seq,file_path,checksum,created_at FROM snapshots WHERE seq<=? AND moderation_revision=? ORDER BY seq DESC').all(target,revision) as {seq:number;file_path:string;checksum:string;created_at:string}[];
+    for(const row of rows) try {if(!resolve(row.file_path).startsWith(resolve(this.directory)+'/'))continue;const data=await readFile(row.file_path);if(digest(data)!==row.checksum)continue;const grid=gunzipSync(data,{maxOutputLength:WIDTH*HEIGHT});if(grid.length!==WIDTH*HEIGHT||grid.some(v=>v>24))continue;return {seq:row.seq,grid:new Uint8Array(grid),createdAt:row.created_at};} catch { /* fall back to an older snapshot or replay */ }
     return null;
   }
 }
