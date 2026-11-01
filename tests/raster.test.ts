@@ -6,12 +6,15 @@ describe('raster v1', () => {
   it('includes endpoints and resolves ties deterministically', () => {
     expect(linePoints(0, 0, 4, 2)).toEqual([[0,0],[1,1],[2,1],[3,2],[4,2]]);
     expect(linePoints(3, 2, 1, 2)).toEqual([[3,2],[2,2],[1,2]]);
+    expect(linePoints(0, 0, 2, 4)).toEqual([[0,0],[1,1],[1,2],[2,3],[2,4]]);
+    expect(linePoints(2, 4, 0, 0)).toEqual([[2,4],[1,3],[1,2],[0,1],[0,0]]);
     expect(paintPixel(3, 4, 2)).toEqual([[3,4,2]]);
   });
   it('defines discrete masks and clips at borders', () => {
     expect(brushMask(1)).toEqual([[0,0]]);
     expect(brushMask(3)).toEqual([[-1,-1],[0,-1],[1,-1],[-1,0],[0,0],[1,0],[-1,1],[0,1],[1,1]]);
     expect(paintBrush([[0,0]], 3, 1)).toEqual([[0,0,1],[1,0,1],[0,1,1],[1,1,1]]);
+    expect([1,3,5,9,15,21].map(n=>brushMask(n).length)).toEqual([1,9,21,69,177,349]);
     expect(() => brushMask(2)).toThrow();
   });
   it('replay and consecutive segments converge', () => {
