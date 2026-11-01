@@ -16,3 +16,6 @@ it('réconcilie une diffusion avant ou après son acquittement',async()=>{
 it('réémet une commande non confirmée et retire son aperçu lors d’un reset',async()=>{
  let grid=new Uint8Array(0);const client=new CollaborationClient(g=>{grid=g as Uint8Array<ArrayBuffer>;});await client.connect();mocks.socket.handlers.get('canvas:state')?.(state());client.submit(command);expect(grid[721]).toBe(1);mocks.socket.disconnect();mocks.socket.connect();mocks.socket.handlers.get('canvas:state')?.(state());expect(mocks.socket.sent).toHaveLength(2);expect(mocks.socket.sent[1].command).toEqual(command);mocks.socket.handlers.get('canvas:reset')?.({...state(),moderationRevision:1});expect(grid[721]).toBe(0);
 });
+it('réessaie après une déconnexion imposée par le serveur',async()=>{
+ vi.useFakeTimers();try{const client=new CollaborationClient(()=>{});await client.connect();const connect=vi.spyOn(mocks.socket,'connect');mocks.socket.handlers.get('disconnect')?.('io server disconnect');await vi.advanceTimersByTimeAsync(3000);expect(connect).toHaveBeenCalledTimes(1);}finally{vi.useRealTimers();}
+});

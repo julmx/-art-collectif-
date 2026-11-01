@@ -24,5 +24,9 @@ it('synchronise deux clients et ne rediffuse pas une retransmission', async () =
     expect(await received).toMatchObject({seq:1,changes:[[3604,1]]});
     const retry=await a.emitWithAck('draw:submit',command); expect(retry).toMatchObject({accepted:true,seq:1,duplicate:true});
     expect(store.db.prepare('SELECT count(*) AS n FROM draw_events').get()?.n).toBe(1);
+    const expensive={...command,opId:randomUUID(),strokeId:randomUUID(),tool:'brush',size:21,points:Array.from({length:64},(_,i)=>i%2?[719,479]:[0,0])};
+    const refusal=await a.emitWithAck('draw:submit',expensive);expect(refusal).toMatchObject({accepted:false,code:'COST_LIMIT_EXCEEDED'});
+    expect(store.db.prepare('SELECT count(*) AS n FROM draw_events').get()?.n).toBe(1);
+
   } finally {a?.disconnect();b?.disconnect();await app.close();rmSync(dir,{recursive:true,force:true});}
 },15000);

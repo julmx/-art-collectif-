@@ -17,8 +17,8 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const snapshot = await snapshots.latest(store.seq,store.revision());
   store.grid=store.replay(store.seq,'moderated',store.revision(),snapshot ?? undefined);
   snapshots.resetBaseline();
-  let snapshotWork: Promise<void> = Promise.resolve();
-  const scheduleSnapshot = () => { snapshotWork = snapshotWork.then(()=>snapshots.saveIfDue()).catch(error=>app.log.error(error,'snapshot failed')); };
+  let snapshotWork: Promise<void> = Promise.resolve(), snapshotPending=false;
+  const scheduleSnapshot = () => { if(snapshotPending)return; snapshotPending=true; snapshotWork=snapshots.saveIfDue().catch(error=>app.log.error(error,'snapshot failed')).finally(()=>{snapshotPending=false;}); };
   const timer=setInterval(scheduleSnapshot,30_000); timer.unref();
   const io = new Server(app.server, { maxHttpBufferSize: 16384, cors: { origin: options.origin }, allowRequest: (req, cb) => cb(null, !req.headers.origin || req.headers.origin === options.origin) });
   const hash = (token:string) => createHash('sha256').update(token).digest('hex');
@@ -36,8 +36,10 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   registerAdmin(app,store,io,snapshots,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
   const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
+  // A batch is bounded both by message count and estimated raster work.
+  const cost=(input:unknown)=>{const c=input as {size?:unknown;points?:unknown};const masks:Record<number,number>={1:1,3:9,5:21,9:69,15:177,21:349};if(!c||typeof c!=='object'||typeof c.size!=='number'||!masks[c.size]||!Array.isArray(c.points)||c.points.length>64)return 1;let total=c.points.length?masks[c.size]:0;for(let i=0;i<c.points.length;i++){const p=c.points[i];if(!Array.isArray(p)||p.length!==2||!Number.isInteger(p[0])||!Number.isInteger(p[1])||p[0]<0||p[0]>=WIDTH||p[1]<0||p[1]>=HEIGHT)return 1;if(i){const prev=c.points[i-1];total+=(1+Math.max(Math.abs(p[0]-prev[0]),Math.abs(p[1]-prev[1])))*masks[c.size];}}return Math.min(total,400001);};
   const flush=()=>{
-    flushTimer=undefined;const batch=queue.splice(0,100);if(!batch.length)return;
+    flushTimer=undefined;const batch:Queued[]=[];let work=0;while(queue.length&&batch.length<100){const next=cost(queue[0].input);if(batch.length&&work+next>400000)break;batch.push(queue.shift()!);work+=next;}if(!batch.length)return;
     try {
       const results=store.submitBatch(batch),revision=store.revision();
       for(let i=0;i<batch.length;i++){
@@ -45,6 +47,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
         if(!result.accepted||result.duplicate)continue;
         if(result.seq%500===0)scheduleSnapshot();
         if(!cells){io.emit('canvas:reset',state());continue;}
+        for(const peer of io.sockets.sockets.values()){peer.data.queuedBytes=Number(peer.data.queuedBytes || 0)+80+cells.length*16;if(peer.data.queuedBytes>4*1024*1024)peer.disconnect(true);}
         io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
       }
     } catch(error){app.log.error(error,'batch reconstruction failed');io.disconnectSockets(true);}
@@ -53,6 +56,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   // Per-participant token bucket: burst 40, sustained 20 commands per second.
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
+    socket.data.queuedBytes=0;socket.conn.on('drain',()=>{socket.data.queuedBytes=0;});
     socket.emit('canvas:state',state());
     socket.on('disconnect', () => { if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string); });
     socket.on('canvas:resync', () => { if (store.healthy) socket.emit('canvas:state',state()); else socket.disconnect(true); });

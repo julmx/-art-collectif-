@@ -22,8 +22,11 @@ export class CollaborationClient {
     const response = await fetch('/api/session',{method:'POST',credentials:'same-origin'});
     if (!response.ok) throw new Error('Session indisponible');
     const socket = this.socket = io({autoConnect:false});
-    socket.on('connect',()=>{ this.connected=true; this.ready=false; this.emit(); });
-    socket.on('disconnect',()=>{ this.connected=false; this.ready=false; for (const p of this.pending) p.sent=false; this.emit(); });
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const retryManually=()=>{if(!retry)retry=setTimeout(()=>{retry=undefined;if(!socket.connected)socket.connect();},3000);};
+    socket.on('connect',()=>{ if(retry)clearTimeout(retry);retry=undefined;this.connected=true; this.ready=false; this.emit(); });
+    socket.on('connect_error',()=>{if(!socket.active)retryManually();});
+    socket.on('disconnect',(reason:string)=>{ this.connected=false; this.ready=false; for (const p of this.pending) p.sent=false; this.emit(); if(reason==='io server disconnect')retryManually(); });
     socket.on('canvas:state',(state:State)=>this.install(state));
     socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state,true); });
     socket.on('project:updated',()=>window.dispatchEvent(new Event('project:updated')));
