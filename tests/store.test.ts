@@ -45,3 +45,7 @@ it('replays moderation retroactively without moving later contributions', () => 
     expect(store.replay(3,'moderated',1)[5*720+7]).toBe(0);
   } finally {store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+it('suspend les écritures si la reconstruction après modération échoue',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'art-broken-replay-'));const store=new Store(join(dir,'db.sqlite'));try{store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();store.db.prepare("UPDATE project SET status='open'").run();const c:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[1,1]]};store.submit('p',c);store.rebuild=()=>{throw new Error('simulation');};expect(()=>store.moderate('p',c.strokeId,'hide','test')).toThrow();expect(store.healthy).toBe(false);expect(store.submit('p',{...c,opId:randomUUID(),strokeId:randomUUID()})).toMatchObject({accepted:false,code:'STORAGE_UNAVAILABLE'});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});

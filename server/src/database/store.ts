@@ -20,6 +20,7 @@ export class Store {
   readonly db: DatabaseSync;
   grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
   seq = 0;
+  healthy = true;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
@@ -62,7 +63,8 @@ export class Store {
       this.db.prepare('UPDATE project SET moderation_revision=? WHERE id=1').run(revision);
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
-    this.rebuild(); return revision;
+    this.healthy=false;
+    this.rebuild(); this.healthy=true; return revision;
   }
   submit(participantId: string, input: unknown): DrawResult {
     const parsed = validate(input); if (!parsed.command) return {opId:parsed.opId,accepted:false,code:parsed.code!};
@@ -70,6 +72,7 @@ export class Store {
     const duplicate = this.db.prepare('SELECT seq, command_json FROM draw_events WHERE participant_id=? AND op_id=?').get(participantId,c.opId) as {seq:number;command_json:string}|undefined;
     if (duplicate) return duplicate.command_json === canonical ? {opId:c.opId,accepted:true,seq:duplicate.seq,duplicate:true} : {opId:c.opId,accepted:false,code:'OP_ID_CONFLICT'};
     const reject = (code:string): DrawResult => ({opId:c.opId,accepted:false,code});
+    if (!this.healthy) return reject('STORAGE_UNAVAILABLE');
     if ((this.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
     // Bound worst-case raster work before committing. Long inputs must be split.
     const maskSize = brushMask(c.size).length;
@@ -94,7 +97,7 @@ export class Store {
     } catch { try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }
     // Never report a storage rejection after a successful commit. If reconstruction
     // also fails, propagate the error so the service stops serving stale state.
-    try { if (!this.hidden(participantId,c.strokeId,this.revision())) applyCells(this.grid,paintBrush(c.points,c.size,c.colorId)); this.seq = seq; } catch { this.rebuild(); }
+    try { if (!this.hidden(participantId,c.strokeId,this.revision())) applyCells(this.grid,paintBrush(c.points,c.size,c.colorId)); this.seq = seq; } catch { this.healthy=false; this.rebuild(); this.healthy=true; }
     return {opId:c.opId,accepted:true,seq,duplicate:false};
   }
   close() { this.db.close(); }
