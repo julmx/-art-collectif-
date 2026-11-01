@@ -7,12 +7,17 @@ import { WIDTH, HEIGHT, paintBrush } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
 import type { DrawCommand } from '../../shared/protocol';
 import { registerAdmin } from './admin/routes';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { Snapshots } from './renderer/snapshots';
 
 export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string }) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
   await app.register(cookie);
   const store = new Store(options.dbPath);
+  const snapshots = new Snapshots(store,join(dirname(options.dbPath),'snapshots'));
+  let snapshotWork: Promise<void> = Promise.resolve();
+  const scheduleSnapshot = () => { snapshotWork = snapshotWork.then(()=>snapshots.saveIfDue()).catch(error=>app.log.error(error,'snapshot failed')); };
+  const timer=setInterval(scheduleSnapshot,30_000); timer.unref();
   const io = new Server(app.server, { maxHttpBufferSize: 16384, cors: { origin: options.origin }, allowRequest: (req, cb) => cb(null, !req.headers.origin || req.headers.origin === options.origin) });
   const hash = (token:string) => createHash('sha256').update(token).digest('hex');
   const identity = (token: string | undefined) => token && /^[a-f0-9]{64}$/.test(token) ? store.db.prepare('SELECT id FROM participants WHERE token_hash=?').get(hash(token)) as {id:string}|undefined : undefined;
@@ -44,6 +49,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       const result = store.submit(socket.data.participantId as string,input);
       (ack as (r:unknown)=>void)(result);
       if (!result.accepted || result.duplicate) return;
+      if (result.seq % 500 === 0) scheduleSnapshot();
       const command = input as DrawCommand;
       const cells = store.hidden(socket.data.participantId as string,command.strokeId,store.revision()) ? [] : paintBrush(command.points,command.size,command.colorId);
       const unique = new Map<number,number>(); for (const [x,y,color] of cells) unique.set(y*WIDTH+x,color);
@@ -51,6 +57,6 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:[...unique]});
     });
   });
-  app.addHook('onClose', async () => { io.close(); store.close(); });
+  app.addHook('onClose', async () => { clearInterval(timer); await snapshotWork; io.close(); store.close(); });
   return {app,store,io};
 }
