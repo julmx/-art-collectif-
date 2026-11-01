@@ -24,3 +24,11 @@ Ce dépôt contient les spécifications consolidées. L'application n'est pas en
 Le développement suit les quatre phases du cahier des charges : moteur graphique, serveur et collaboration, administration et reconstitution, puis timelapse et publication.
 
 Les secrets, sessions, contributions réelles, sauvegardes et exports d'exploitation ne doivent pas être ajoutés au dépôt.
+
+## Prototype local (phase 1 en cours)
+
+Prérequis : Node.js 24 et npm. Exécuter `npm ci`, puis `npm run dev`. `npm test` vérifie le moteur, `npm run build` vérifie la compilation et `npm run test:e2e` exécute les tests navigateur (installer Chromium avec `npx playwright install chromium`).
+
+Le prototype actuel dessine uniquement dans l'onglet : aucune contribution n'est encore synchronisée ou enregistrée. Le fond en damier est un fond d'essai. Les essais physiques sur écran tactile et stylet restent à effectuer.
+
+Le moteur emploie Bresenham entier avec extrémités incluses et avance les deux axes lorsque leurs conditions respectives sont satisfaites. Les masques incluent les centres de cellules dont la distance au centre est inférieure ou égale à la moitié du diamètre. Les coordonnées d'écran sont transformées en coordonnées natives puis arrondies à l'entier inférieur. Une couleur est considérée chromatique si son écart maximal entre composantes RGB est d'au moins 40 sur 255 ; les 24 couleurs doivent être distinctes.
