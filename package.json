@@ -7,7 +7,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "server": "tsx server/src/main.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
