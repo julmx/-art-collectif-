@@ -1,0 +1,7 @@
+[Unit]
+Description=Vérification du volume Art Collectif
+After=docker.service
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/art-collectif-backup.env
+ExecStart=/bin/bash ${PROJECT_DIR}/ops/check-disk.sh

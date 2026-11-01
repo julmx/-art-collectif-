@@ -9,8 +9,8 @@ import { registerAdmin } from './admin/routes';
 import { dirname, join } from 'node:path';
 import { Snapshots } from './renderer/snapshots';
 
-export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string }) {
-  const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
+export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean }) {
+  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 16 * 1024 });
   await app.register(cookie);
   const store = new Store(options.dbPath,true);
   const snapshots = new Snapshots(store,join(dirname(options.dbPath),'snapshots'));

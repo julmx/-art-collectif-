@@ -1,0 +1,7 @@
+[Unit]
+Description=Surveillance du volume Art Collectif
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target
