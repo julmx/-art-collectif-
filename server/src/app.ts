@@ -6,8 +6,10 @@ import { Store } from './database/store';
 import { WIDTH, HEIGHT, paintBrush } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
 import type { DrawCommand } from '../../shared/protocol';
+import { registerAdmin } from './admin/routes';
+import { dirname } from 'node:path';
 
-export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean }) {
+export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string }) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
   await app.register(cookie);
   const store = new Store(options.dbPath);
@@ -16,7 +18,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const identity = (token: string | undefined) => token && /^[a-f0-9]{64}$/.test(token) ? store.db.prepare('SELECT id FROM participants WHERE token_hash=?').get(hash(token)) as {id:string}|undefined : undefined;
   app.addHook('onRequest', async (request, reply) => { if (request.method !== 'GET' && request.headers.origin !== options.origin) return reply.code(403).send({error:'ORIGIN_FORBIDDEN'}); });
   app.get('/api/health', async () => ({ready:true}));
-  app.get('/api/project', async () => { const row = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,status:row.status,palette:JSON.parse(row.palette_json),title:'Art Collectif',description:'Une image, mille regards.',participationTerms:'Les conditions définitives seront précisées avant l’ouverture.'}; });
+  app.get('/api/project', async () => { const row = store.db.prepare('SELECT status,palette_json,title,description,participation_terms FROM project WHERE id=1').get() as {status:string;palette_json:string;title:string;description:string;participation_terms:string}; return {width:WIDTH,height:HEIGHT,status:row.status,palette:JSON.parse(row.palette_json),title:row.title,description:row.description,participationTerms:row.participation_terms}; });
   app.post('/api/session', async (request, reply) => {
     let participant = identity(request.cookies.art_session);
     if (!participant) { const token = randomBytes(32).toString('hex'), now = new Date().toISOString(); participant = {id:randomUUID()}; store.db.prepare('INSERT INTO participants(id,token_hash,created_at,last_seen_at) VALUES(?,?,?,?)').run(participant.id,hash(token),now,now); reply.setCookie('art_session',token,{httpOnly:true,secure:options.secureCookie !== false,sameSite:'strict',path:'/',maxAge:90*24*60*60}); }
@@ -24,6 +26,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   });
   io.use((socket,next) => { const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
+  registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
   // Per-participant token bucket: burst 40, sustained 20 commands per second.
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
