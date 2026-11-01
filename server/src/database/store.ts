@@ -18,7 +18,7 @@ function validate(input: unknown): { command?: DrawCommand; code?: string; opId:
 /** One synchronous SQLite writer owns sequence assignment and state changes. */
 export class Store {
   readonly db: DatabaseSync;
-  grid = new Uint8Array(WIDTH * HEIGHT);
+  grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
   seq = 0;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -27,11 +27,41 @@ export class Store {
     this.db.exec(`CREATE TABLE IF NOT EXISTS project (id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL CHECK(status IN ('draft','open','paused','closed')), palette_json TEXT NOT NULL, moderation_revision INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS participants (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS draw_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT NOT NULL, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, part_index INTEGER NOT NULL CHECK(part_index>=0), final INTEGER NOT NULL CHECK(final IN (0,1)), tool TEXT NOT NULL CHECK(tool IN ('pixel','brush')), color_id INTEGER NOT NULL CHECK(color_id BETWEEN 1 AND 24), size INTEGER NOT NULL CHECK(size IN (1,3,5,9,15,21)), points_json TEXT NOT NULL, command_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(participant_id,op_id), UNIQUE(participant_id,stroke_id,part_index));
-      CREATE INDEX IF NOT EXISTS draw_stroke ON draw_events(participant_id,stroke_id);`);
+      CREATE INDEX IF NOT EXISTS draw_stroke ON draw_events(participant_id,stroke_id);
+      CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL UNIQUE, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('hide','restore')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS moderation_stroke ON moderation_actions(participant_id,stroke_id,revision);`);
     this.db.prepare('INSERT OR IGNORE INTO project(id,status,palette_json) VALUES(1,?,?)').run('draft',JSON.stringify(PALETTE));
     this.rebuild();
   }
-  rebuild() { this.grid = new Uint8Array(WIDTH * HEIGHT); this.seq = 0; for (const row of this.db.prepare('SELECT seq, participant_id, command_json, created_at FROM draw_events ORDER BY seq').iterate() as IterableIterator<EventRow>) { const c = JSON.parse(row.command_json) as DrawCommand; applyCells(this.grid, paintBrush(c.points,c.size,c.colorId)); this.seq = row.seq; } }
+  hidden(participantId:string,strokeId:string,revision:number): boolean {
+    const row = this.db.prepare('SELECT action FROM moderation_actions WHERE participant_id=? AND stroke_id=? AND revision<=? ORDER BY revision DESC LIMIT 1').get(participantId,strokeId,revision) as {action:string}|undefined;
+    return row?.action === 'hide';
+  }
+  revision():number { return (this.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision; }
+  replay(target:number, mode:'raw'|'moderated', revision:number): Uint8Array {
+    const grid = new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
+    if (mode === 'moderated') {
+      const decisions=this.db.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(revision) as {participant_id:string;stroke_id:string;action:string}[];
+      for (const d of decisions) { const key=JSON.stringify([d.participant_id,d.stroke_id]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
+    }
+    for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq<=? ORDER BY seq').iterate(target) as IterableIterator<EventRow>) {
+      const c=JSON.parse(row.command_json) as DrawCommand;
+      if (!hidden.has(JSON.stringify([row.participant_id,c.strokeId]))) applyCells(grid,paintBrush(c.points,c.size,c.colorId));
+    }
+    return grid;
+  }
+  rebuild() { this.seq = Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq); this.grid=this.replay(this.seq,'moderated',this.revision()); }
+  moderate(participantId:string,strokeId:string,action:'hide'|'restore',reason:string): number {
+    if (!reason.trim() || reason.length>1000 || !['hide','restore'].includes(action) || !this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(participantId,strokeId)) throw new Error('INVALID_MODERATION');
+    this.db.exec('BEGIN IMMEDIATE'); let revision:number;
+    try {
+      revision=this.revision()+1;
+      this.db.prepare('INSERT INTO moderation_actions(revision,participant_id,stroke_id,action,reason,created_at) VALUES(?,?,?,?,?,?)').run(revision,participantId,strokeId,action,reason,new Date().toISOString());
+      this.db.prepare('UPDATE project SET moderation_revision=? WHERE id=1').run(revision);
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    this.rebuild(); return revision;
+  }
   submit(participantId: string, input: unknown): DrawResult {
     const parsed = validate(input); if (!parsed.command) return {opId:parsed.opId,accepted:false,code:parsed.code!};
     const c = parsed.command, canonical = JSON.stringify(c);
@@ -62,7 +92,7 @@ export class Store {
     } catch { try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }
     // Never report a storage rejection after a successful commit. If reconstruction
     // also fails, propagate the error so the service stops serving stale state.
-    try { applyCells(this.grid,paintBrush(c.points,c.size,c.colorId)); this.seq = seq; } catch { this.rebuild(); }
+    try { if (!this.hidden(participantId,c.strokeId,this.revision())) applyCells(this.grid,paintBrush(c.points,c.size,c.colorId)); this.seq = seq; } catch { this.rebuild(); }
     return {opId:c.opId,accepted:true,seq,duplicate:false};
   }
   close() { this.db.close(); }

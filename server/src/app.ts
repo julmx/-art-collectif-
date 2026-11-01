@@ -42,7 +42,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       (ack as (r:unknown)=>void)(result);
       if (!result.accepted || result.duplicate) return;
       const command = input as DrawCommand;
-      const cells = paintBrush(command.points,command.size,command.colorId);
+      const cells = store.hidden(socket.data.participantId as string,command.strokeId,store.revision()) ? [] : paintBrush(command.points,command.size,command.colorId);
       const unique = new Map<number,number>(); for (const [x,y,color] of cells) unique.set(y*WIDTH+x,color);
       const revision = (store.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision;
       io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:[...unique]});

@@ -27,3 +27,21 @@ it('commits before acknowledgement, handles retries and rebuilds after restart',
     expect(store.seq).toBe(2); expect(store.grid).toEqual(original);
   } finally { store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
+
+it('replays moderation retroactively without moving later contributions', () => {
+  const dir=mkdtempSync(join(tmpdir(),'art-moderation-')), path=join(dir,'db.sqlite'); const store=new Store(path);
+  try {
+    store.db.prepare('INSERT INTO participants VALUES(?,?,?,?)').run('p','hash','now','now'); store.db.prepare("UPDATE project SET status='open'").run();
+    const a:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:false,tool:'pixel',colorId:1,size:1,points:[[5,5],[6,5]]};
+    const b:DrawCommand={...a,opId:randomUUID(),strokeId:randomUUID(),colorId:2,final:true,points:[[5,5]]};
+    expect(store.submit('p',a).accepted).toBe(true); expect(store.submit('p',b).accepted).toBe(true);
+    expect(store.moderate('p',a.strokeId,'hide','test')).toBe(1);
+    expect(store.grid[5*720+5]).toBe(2); expect(store.grid[5*720+6]).toBe(0);
+    const later:DrawCommand={...a,opId:randomUUID(),partIndex:1,final:true,points:[[6,5],[7,5]]};
+    expect(store.submit('p',later).accepted).toBe(true); expect(store.grid[5*720+7]).toBe(0);
+    expect(store.replay(3,'raw',1)[5*720+7]).toBe(1);
+    expect(store.moderate('p',a.strokeId,'restore','test')).toBe(2);
+    expect(store.grid[5*720+5]).toBe(2); expect(store.grid[5*720+7]).toBe(1);
+    expect(store.replay(3,'moderated',1)[5*720+7]).toBe(0);
+  } finally {store.close();rmSync(dir,{recursive:true,force:true});}
+});
