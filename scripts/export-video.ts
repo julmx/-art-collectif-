@@ -9,7 +9,7 @@ import sharp from 'sharp';
 import { WIDTH,HEIGHT,applyCells,paintBrush } from '../shared/raster';
 import type { DrawCommand } from '../shared/protocol';
 
-export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;endSeq?:number}) {
+export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;endSeq?:number;captureAt?:string}) {
   if(!['activity','chronological'].includes(args.mode)||!['raw','moderated'].includes(args.moderation)||!Number.isFinite(args.duration)||args.duration<=0||args.duration>3600||!Number.isInteger(args.fps)||args.fps<1||args.fps>60||!Number.isInteger(args.scale)||args.scale<1||args.scale>8) throw new Error('Paramètres vidéo invalides');
   const dir=await mkdtemp(join(tmpdir(),'art-video-'));let source:DatabaseSync|undefined,copy:DatabaseSync|undefined;
   try {
@@ -22,7 +22,7 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
     if(!Number.isSafeInteger(end)||end<0||end>max) throw new Error('Séquence de fin invalide');
     const events=copy.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq<=? ORDER BY seq').all(end) as {seq:number;participant_id:string;command_json:string;created_at:string}[];
     const hidden=new Set<string>(); if(args.moderation==='moderated') for(const action of copy.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(project.moderation_revision) as {participant_id:string;stroke_id:string;action:string}[]) {const key=JSON.stringify([action.participant_id,action.stroke_id]);if(action.action==='hide')hidden.add(key);else hidden.delete(key);}
-    const palette=JSON.parse(project.palette_json) as string[], grid=new Uint8Array(WIDTH*HEIGHT), frames=Math.max(2,Math.round(args.duration*args.fps)), start=project.started_at ? Date.parse(project.started_at) : 0, capture=Date.now(), endTime=args.endSeq !== undefined ? (events.length ? Date.parse(events[events.length-1].created_at) : start) : (project.closed_at ? Date.parse(project.closed_at) : capture);
+    const palette=JSON.parse(project.palette_json) as string[], grid=new Uint8Array(WIDTH*HEIGHT), frames=Math.max(2,Math.round(args.duration*args.fps)), start=project.started_at ? Date.parse(project.started_at) : 0, capture=args.captureAt ? Date.parse(args.captureAt) : Date.now(), endTime=args.endSeq !== undefined ? (events.length ? Date.parse(events[events.length-1].created_at) : start) : (project.closed_at ? Date.parse(project.closed_at) : capture);
     const ffmpeg=spawn('ffmpeg',['-v','error','-y','-f','rawvideo','-pix_fmt','rgb24','-s',`${WIDTH}x${HEIGHT}`,'-r',String(args.fps),'-i','pipe:0','-vf',`scale=${WIDTH*args.scale}:${HEIGHT*args.scale}:flags=neighbor`,'-c:v','libx264','-pix_fmt','yuv420p',resolve(args.output)],{stdio:['pipe','ignore','pipe']});
     let stderr='';ffmpeg.stderr.on('data',data=>{stderr+=String(data).slice(0,4096);}); const completed=new Promise<void>((ok,fail)=>{ffmpeg.on('error',fail);ffmpeg.on('close',code=>code===0?ok():fail(new Error(`FFmpeg: ${stderr}`)));});
     let cursor=0;
