@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ page }) => {
   await page.goto('/');
+  await expect(page.locator('.status')).toContainText('dessin ouvert');
   const canvas = page.locator('canvas'); await canvas.scrollIntoViewIfNeeded(); const box = await canvas.boundingBox();
   if (!box) throw new Error('Canvas invisible');
   const pixel = () => canvas.evaluate((c: HTMLCanvasElement) => [...c.getContext('2d')!.getImageData(360,240,1,1).data]);
