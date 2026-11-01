@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 import sharp, { type Sharp } from 'sharp';
 import { WIDTH,HEIGHT } from '../../../shared/raster';
 import type { Store } from '../database/store';
+import type { Snapshots } from '../renderer/snapshots';
 
 type Query={seq?:string;at?:string;moderation?:string;scale?:string};
-export function registerExports(app:FastifyInstance,store:Store) {
+export function registerExports(app:FastifyInstance,store:Store,snapshots:Snapshots) {
   async function image(req:FastifyRequest,reply:FastifyReply,overlayOnly:boolean) {
     const q=req.query as Query, p=store.db.prepare('SELECT palette_json,base_image_path,moderation_revision FROM project WHERE id=1').get() as {palette_json:string;base_image_path:string|null;moderation_revision:number};
     const mode=q.moderation || 'moderated', scale=q.scale===undefined?1:Number(q.scale);
@@ -14,7 +15,8 @@ export function registerExports(app:FastifyInstance,store:Store) {
     if(q.seq!==undefined) { if(!/^(0|[1-9]\d*)$/.test(q.seq)) return reply.code(400).send({error:'INVALID_QUERY'}); target=Number(q.seq); if(!Number.isSafeInteger(target)||target>store.seq) return reply.code(400).send({error:'INVALID_QUERY'}); }
     if(q.at!==undefined) { if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(q.at)||Number.isNaN(Date.parse(q.at))) return reply.code(400).send({error:'INVALID_QUERY'}); const date=new Date(q.at).toISOString(); target=Number((store.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events WHERE created_at<=?').get(date) as {seq:number}).seq); }
     if(!overlayOnly && !p.base_image_path) return reply.code(409).send({error:'BASE_IMAGE_MISSING'});
-    const grid=store.replay(target,mode,p.moderation_revision), palette=JSON.parse(p.palette_json) as string[];
+    const cache=mode==='moderated' ? await snapshots.latest(target,p.moderation_revision) : null;
+    const grid=store.replay(target,mode,p.moderation_revision,cache ?? undefined), palette=JSON.parse(p.palette_json) as string[];
     const pixels=Buffer.alloc(WIDTH*HEIGHT*4);
     for(let i=0;i<grid.length;i++) if(grid[i]) {const hex=palette[grid[i]-1]; pixels[i*4]=parseInt(hex.slice(1,3),16);pixels[i*4+1]=parseInt(hex.slice(3,5),16);pixels[i*4+2]=parseInt(hex.slice(5,7),16);pixels[i*4+3]=255;}
     let image:Sharp;

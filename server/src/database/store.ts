@@ -40,13 +40,13 @@ export class Store {
     return row?.action === 'hide';
   }
   revision():number { return (this.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision; }
-  replay(target:number, mode:'raw'|'moderated', revision:number): Uint8Array {
-    const grid = new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
+  replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}): Uint8Array {
+    const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
     if (mode === 'moderated') {
       const decisions=this.db.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(revision) as {participant_id:string;stroke_id:string;action:string}[];
       for (const d of decisions) { const key=JSON.stringify([d.participant_id,d.stroke_id]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
     }
-    for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq<=? ORDER BY seq').iterate(target) as IterableIterator<EventRow>) {
+    for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq>? AND seq<=? ORDER BY seq').iterate(snapshot?.seq ?? 0,target) as IterableIterator<EventRow>) {
       const c=JSON.parse(row.command_json) as DrawCommand;
       if (!hidden.has(JSON.stringify([row.participant_id,c.strokeId]))) applyCells(grid,paintBrush(c.points,c.size,c.colorId));
     }

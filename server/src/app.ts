@@ -31,7 +31,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   });
   io.use((socket,next) => { const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
-  registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
+  registerAdmin(app,store,io,snapshots,{dataDir:dirname(options.dbPath),passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
   // Per-participant token bucket: burst 40, sustained 20 commands per second.
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
