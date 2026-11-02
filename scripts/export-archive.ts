@@ -12,7 +12,7 @@ import sharp from 'sharp';
 import {WIDTH,HEIGHT,paintBrush,applyCells} from '../shared/raster';
 import {exportVideo} from './export-video';
 const codeRoot=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-export async function exportArchive(args:{database:string;output:string;moderation:'raw'|'moderated';videos?:boolean}) {
+export async function exportArchive(args:{database:string;output:string;moderation:'raw'|'moderated';videos?:boolean;metadata?:string}) {
  const temp=await mkdtemp(join(tmpdir(),'art-archive-'));let original:DatabaseSync|undefined,db:DatabaseSync|undefined;
  try {
   if(!['raw','moderated'].includes(args.moderation))throw new Error('Modération invalide');
@@ -20,6 +20,7 @@ export async function exportArchive(args:{database:string;output:string;moderati
   const p=db.prepare('SELECT * FROM project WHERE id=1').get() as {status:string;palette_json:string;base_image_path:string|null;base_image_checksum:string;title:string;description:string;participation_terms:string;started_at:string|null;closed_at:string|null;moderation_revision:number};
   if(!p.base_image_path)throw new Error('Fond absent');const base=await readFile(p.base_image_path);if(createHash('sha256').update(base).digest('hex')!==p.base_image_checksum)throw new Error('Fond incompatible avec la capture');
   const maxSeq=Number((db.prepare('SELECT COALESCE(MAX(seq),0) n FROM draw_events').get() as {n:number}).n),captureAt=new Date().toISOString(),palette=JSON.parse(p.palette_json) as string[], hidden=new Set<string>();
+  if(args.metadata)await writeFile(args.metadata,JSON.stringify({captureCompletedAt:captureAt,sequence:maxSeq,moderationRevision:p.moderation_revision}),{mode:0o600});
   const files:string[]=[];const add=async(name:string,data:string|Uint8Array)=>{await mkdir(dirname(join(temp,name)),{recursive:true});await writeFile(join(temp,name),data);files.push(name);};
   await add('base.png',base);await add('project.json',JSON.stringify({width:WIDTH,height:HEIGHT,status:p.status,palette,title:p.title,description:p.description,participationTerms:p.participation_terms,termsHistory:db.prepare('SELECT terms,effective_after_seq,created_at FROM terms_history ORDER BY id').all(),startedAt:p.started_at,closedAt:p.closed_at},null,2));
   const moderationPath=join(temp,'moderation.jsonl'),mfd=openSync(moderationPath,'w');try{for(const row of db.prepare('SELECT revision,participant_id,stroke_id,action,reason,created_at FROM moderation_actions ORDER BY revision').iterate() as IterableIterator<{participant_id:string;stroke_id:string;action:string}>){writeSync(mfd,JSON.stringify(row)+'\n');const key=JSON.stringify([row.participant_id,row.stroke_id]);if(row.action==='hide')hidden.add(key);else hidden.delete(key);}}finally{closeSync(mfd);}files.push('moderation.jsonl');
@@ -36,4 +37,4 @@ export async function exportArchive(args:{database:string;output:string;moderati
   const zip=new yazl.ZipFile(), output=createWriteStream(resolve(args.output),{mode:0o600});zip.outputStream.pipe(output);for(const file of files)zip.addFile(join(temp,file),file);zip.end();await once(output,'close');
  } finally{original?.close();db?.close();await rm(temp,{recursive:true,force:true});}
 }
-if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){const args=new Map<string,string>();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);const database=args.get('--database'),output=args.get('--output');if(!database||!output)throw new Error('--database et --output requis');exportArchive({database,output,moderation:(args.get('--moderation')||'moderated') as 'raw'|'moderated',videos:args.get('--videos')==='true'}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});}
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){const args=new Map<string,string>();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);const database=args.get('--database'),output=args.get('--output');if(!database||!output)throw new Error('--database et --output requis');exportArchive({database,output,moderation:(args.get('--moderation')||'moderated') as 'raw'|'moderated',videos:args.get('--videos')==='true',metadata:args.get('--metadata')}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});}

@@ -1,5 +1,5 @@
 import { DatabaseSync, backup } from 'node:sqlite';
-import { mkdtemp,rm,readFile } from 'node:fs/promises';
+import { mkdtemp,rm,readFile,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -9,7 +9,7 @@ import sharp from 'sharp';
 import { WIDTH,HEIGHT,applyCells,paintBrush } from '../shared/raster';
 import type { DrawCommand } from '../shared/protocol';
 
-export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;width?:number;height?:number;endSeq?:number;captureAt?:string}) {
+export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;width?:number;height?:number;endSeq?:number;captureAt?:string;metadata?:string}) {
   if(!['activity','chronological'].includes(args.mode)||!['raw','moderated'].includes(args.moderation)||!Number.isFinite(args.duration)||args.duration<=0||args.duration>3600||!Number.isInteger(args.fps)||args.fps<1||args.fps>60||!Number.isInteger(args.scale)||args.scale<1||args.scale>8) throw new Error('Paramètres vidéo invalides');
   if ((args.width !== undefined && args.width !== WIDTH*args.scale) || (args.height !== undefined && args.height !== HEIGHT*args.scale) || (args.captureAt !== undefined && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(args.captureAt) || Number.isNaN(Date.parse(args.captureAt))))) throw new Error('Résolution ou instant de capture invalide');
   const dir=await mkdtemp(join(tmpdir(),'art-video-'));let source:DatabaseSync|undefined,copy:DatabaseSync|undefined,terminateEncoder:(()=>void)|undefined;
@@ -21,6 +21,7 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
     const base=await readFile(project.base_image_path); if(createHash('sha256').update(base).digest('hex')!==project.base_image_checksum) throw new Error('Fond incompatible avec la capture');
     const max=Number((copy.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM draw_events').get() as {n:number}).n), end=args.endSeq ?? max;
     if(!Number.isSafeInteger(end)||end<0||end>max) throw new Error('Séquence de fin invalide');
+    if(args.metadata)await writeFile(args.metadata,JSON.stringify({captureCompletedAt:new Date().toISOString(),sequence:end,moderationRevision:project.moderation_revision}),{mode:0o600});
     // Materialise only the latest moderation decisions in a disk-backed TEMP table.
     copy.exec('PRAGMA temp_store=FILE; CREATE TEMP TABLE hidden(participant_id TEXT,stroke_id TEXT,PRIMARY KEY(participant_id,stroke_id)) WITHOUT ROWID');
     if(args.moderation==='moderated') { const hide=copy.prepare('INSERT OR IGNORE INTO hidden VALUES(?,?)'),restore=copy.prepare('DELETE FROM hidden WHERE participant_id=? AND stroke_id=?'); for(const a of copy.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').iterate(project.moderation_revision) as IterableIterator<{participant_id:string;stroke_id:string;action:string}>) (a.action==='hide'?hide:restore).run(a.participant_id,a.stroke_id); }
@@ -45,5 +46,5 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
 if (process.argv[1] && resolve(process.argv[1])===resolve(new URL(import.meta.url).pathname)) {
   const options=new Map<string,string>();for(let i=2;i<process.argv.length;i+=2) options.set(process.argv[i],process.argv[i+1]);
   const required=(name:string)=>{const value=options.get(name);if(!value)throw new Error(`${name} requis`);return value;};
-  exportVideo({database:required('--database'),output:required('--output'),mode:(options.get('--mode')||'activity') as 'activity'|'chronological',moderation:(options.get('--moderation')||'moderated') as 'raw'|'moderated',duration:Number(options.get('--duration')||180),fps:Number(options.get('--fps')||25),scale:Number(options.get('--scale')||2),width:options.has('--width')?Number(options.get('--width')):undefined,height:options.has('--height')?Number(options.get('--height')):undefined,captureAt:options.get('--capture-at'),endSeq:options.has('--end-seq')?Number(options.get('--end-seq')):undefined}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});
+  exportVideo({database:required('--database'),output:required('--output'),mode:(options.get('--mode')||'activity') as 'activity'|'chronological',moderation:(options.get('--moderation')||'moderated') as 'raw'|'moderated',duration:Number(options.get('--duration')||180),fps:Number(options.get('--fps')||25),scale:Number(options.get('--scale')||2),width:options.has('--width')?Number(options.get('--width')):undefined,height:options.has('--height')?Number(options.get('--height')):undefined,captureAt:options.get('--capture-at'),endSeq:options.has('--end-seq')?Number(options.get('--end-seq')):undefined,metadata:options.get('--metadata')}).catch(error=>{process.stderr.write(`${error.message}\n`);process.exitCode=1;});
 }
