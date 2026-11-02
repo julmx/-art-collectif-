@@ -9,6 +9,7 @@ import { validPalette } from '../../../shared/palette';
 import { WIDTH, HEIGHT } from '../../../shared/raster';
 import type { Store } from '../database/store';
 import { registerExports } from './exports';
+import { registerExportJobs } from './jobs';
 
 export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:{dataDir:string;dbPath:string;passwordHash?:string;secureCookie:boolean; state:()=>unknown}) {
   const sessions=new Map<string,number>(), attempts=new Map<string,{count:number;until:number}>();
@@ -21,6 +22,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
   const authorized=(token:string|undefined) => { if (!token) return false; const expiry=sessions.get(hash(token)); return !!expiry && expiry>Date.now(); };
   app.addHook('preHandler',async (req,reply)=>{ if (req.url.startsWith('/api/admin/') && req.url.split('?')[0] !== '/api/admin/login' && !authorized(req.cookies.art_admin)) return reply.code(401).send({error:'UNAUTHENTICATED'}); });
   registerExports(app,store,options.dbPath);
+  registerExportJobs(app,store,options);
   app.post('/api/admin/login',async (req,reply)=>{
     const attempt=attempts.get(req.ip); if(attempt && attempt.until>Date.now() && attempt.count>=5) return reply.code(429).send({error:'RATE_LIMITED'});
     const password=(req.body as {password?:unknown})?.password;
