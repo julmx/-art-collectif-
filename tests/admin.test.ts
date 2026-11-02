@@ -49,7 +49,10 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:{...config,participationTerms:'Nouvelles conditions'}})).statusCode).toBe(200);
     const changed=[...PALETTE]; [changed[0],changed[1]]=[changed[1],changed[0]];
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:{...config,palette:changed}})).statusCode).toBe(409);
-    expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed'}})).statusCode).toBe(200);
+    expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed'}})).json().error).toBe('CLOSURE_CONFIRMATION_REQUIRED');
+    expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed',confirmation:'oui'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'GET',url:'/api/project'})).json().status).toBe('open');
+    expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'closed',confirmation:'CLOTURER'}})).statusCode).toBe(200);
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(409);
     expect((await app.inject({method:'POST',url:'/api/admin/logout',headers:auth})).statusCode).toBe(200);
     expect((await app.inject({method:'GET',url:'/api/admin/events',headers:{cookie}})).statusCode).toBe(401);

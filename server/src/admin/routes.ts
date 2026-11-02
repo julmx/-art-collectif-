@@ -65,9 +65,10 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
     io.emit('project:updated');return {ok:true};
   });
   app.post('/api/admin/status',async(req,reply)=>{
-    const next=(req.body as {status?:unknown})?.status; const p=store.db.prepare('SELECT * FROM project WHERE id=1').get() as {status:string;base_image_path:string|null;palette_json:string;participation_terms:string;started_at:string|null};
+    const body=req.body as {status?:unknown;confirmation?:unknown},next=body?.status; const p=store.db.prepare('SELECT * FROM project WHERE id=1').get() as {status:string;base_image_path:string|null;palette_json:string;participation_terms:string;started_at:string|null};
     const allowed:Record<string,string[]>={draft:['open'],open:['paused','closed'],paused:['open','closed'],closed:[]};
     if(typeof next!=='string' || !allowed[p.status].includes(next)) return reply.code(409).send({error:'INVALID_TRANSITION'});
+    if(next==='closed' && body.confirmation!=='CLOTURER') return reply.code(400).send({error:'CLOSURE_CONFIRMATION_REQUIRED'});
     if(next==='open' && (!p.base_image_path || !validPalette(JSON.parse(p.palette_json)) || !p.participation_terms.trim())) return reply.code(409).send({error:'PROJECT_NOT_CONFIGURED'});
     const now=new Date().toISOString(); store.db.prepare('UPDATE project SET status=?, started_at=?, closed_at=? WHERE id=1').run(next,p.started_at || (next==='open'?now:null),next==='closed'?now:null);
     io.emit('project:status',{status:next}); if(next==='open') io.emit('canvas:reset',options.state()); return {ok:true,status:next};

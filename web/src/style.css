@@ -4,3 +4,5 @@
 .admin-palette{display:flex;gap:6px;flex-wrap:wrap}.admin-palette span{width:24px;height:24px;border-radius:50%;border:1px solid #0002}#palette-feedback{font-size:12px;color:#687363}
 
 .admin-content input[type=checkbox]{width:auto;margin-right:6px}
+
+.admin-content #close-dialog{width:min(520px,calc(100% - 32px));padding:32px}.admin-content #close-dialog p{color:#555f54}.admin-content .close-actions{margin-top:20px}.admin-content #confirm-close{background:#9e362c;border-color:#9e362c}.admin-content #confirm-close:disabled{opacity:.45;cursor:not-allowed}

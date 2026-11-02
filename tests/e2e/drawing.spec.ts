@@ -80,3 +80,10 @@ test('masquer puis restaurer un trait conserve les écritures ultérieures',asyn
   await admin.locator('[name=action]').selectOption('restore');await admin.getByRole('button',{name:'Appliquer la décision'}).click();await expect.poll(async()=> (await counts()).red).toBeGreaterThan(30);expect((await counts()).orange).toBeGreaterThan(0);
  }finally{await ctxA.close();await ctxB.close();await ctxAdmin.close();}
 });
+test('la clôture exige une saisie explicite et un second clic',async({page})=>{
+ await page.goto('/admin.html');await page.getByLabel('Mot de passe').fill('test-password');await page.getByRole('button',{name:'Se connecter'}).click();
+ await page.getByRole('button',{name:'Clôturer',exact:true}).click();const dialog=page.getByRole('dialog',{name:'Clôturer définitivement le projet ?'});await expect(dialog).toBeVisible();const confirm=dialog.getByRole('button',{name:'Clôturer définitivement'});await expect(confirm).toBeDisabled();
+ await dialog.getByLabel('Pour confirmer, saisissez CLOTURER').fill('CLOTURER');await expect(confirm).toBeEnabled();await page.keyboard.press('Enter');await expect(dialog).toBeVisible();await dialog.getByRole('button',{name:'Annuler'}).click();await expect(dialog).not.toBeVisible();
+ expect((await page.request.get('/api/project')).status()).toBe(200);expect((await (await page.request.get('/api/project')).json()).status).toBe('open');
+ await page.getByRole('button',{name:'Clôturer',exact:true}).click();await expect(confirm).toBeDisabled();await dialog.getByLabel('Pour confirmer, saisissez CLOTURER').fill('CLOTURER');await confirm.click();await expect(dialog).not.toBeVisible();await expect(page.locator('#message')).toContainText('définitivement clôturé');expect((await (await page.request.get('/api/project')).json()).status).toBe('closed');
+});
