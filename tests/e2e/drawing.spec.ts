@@ -1,4 +1,9 @@
 import { test, expect } from '@playwright/test';
+test('la toile utilise la place disponible sur ordinateur et tient sur mobile',async({page})=>{
+  await page.setViewportSize({width:1600,height:1000});await page.goto('/');
+  const canvas=page.locator('canvas');const desktop=await canvas.boundingBox();expect(desktop).not.toBeNull();expect(desktop!.width).toBeGreaterThan(1000);
+  await page.setViewportSize({width:375,height:812});const mobile=await canvas.boundingBox(),viewport=await page.locator('#viewport').boundingBox();expect(mobile).not.toBeNull();expect(viewport).not.toBeNull();expect(mobile!.width).toBeLessThanOrEqual(viewport!.width);expect(mobile!.width).toBeGreaterThan(250);
+});
 test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.status')).toContainText('dessin ouvert');
