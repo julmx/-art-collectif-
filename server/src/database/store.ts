@@ -66,11 +66,12 @@ export class Store {
     if(!['ban','unban'].includes(action)||!reason.trim()||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
     this.db.prepare('INSERT INTO participant_sanctions(participant_id,action,reason,created_at) VALUES(?,?,?,?)').run(participantId,action,reason.trim(),new Date().toISOString());
   }
-  replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}): Uint8Array {
+  replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}, overrides?:{participantId:string;strokeId:string;action:'hide'|'restore'}[]): Uint8Array {
     const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
     if (mode === 'moderated') {
       const decisions=this.db.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(revision) as {participant_id:string;stroke_id:string;action:string}[];
       for (const d of decisions) { const key=JSON.stringify([d.participant_id,d.stroke_id]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
+      for(const d of overrides??[]){const key=JSON.stringify([d.participantId,d.strokeId]);if(d.action==='hide')hidden.add(key);else hidden.delete(key);}
     }
     for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq>? AND seq<=? ORDER BY seq').iterate(snapshot?.seq ?? 0,target) as IterableIterator<EventRow>) {
       const c=JSON.parse(row.command_json) as DrawCommand;
@@ -80,11 +81,14 @@ export class Store {
   }
   rebuild() { this.seq = Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq); this.grid=this.replay(this.seq,'moderated',this.revision()); }
   moderate(participantId:string,strokeId:string,action:'hide'|'restore',reason:string): number {
-    if (!reason.trim() || reason.length>1000 || !['hide','restore'].includes(action) || !this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(participantId,strokeId)) throw new Error('INVALID_MODERATION');
+    return this.moderateMany([{participantId,strokeId}],action,reason);
+  }
+  moderateMany(strokes:{participantId:string;strokeId:string}[],action:'hide'|'restore',reason:string): number {
+    if (!Array.isArray(strokes)||strokes.length<1||strokes.length>50||!reason.trim()||reason.length>1000||!['hide','restore'].includes(action)||new Set(strokes.map(s=>JSON.stringify([s.participantId,s.strokeId]))).size!==strokes.length||strokes.some(s=>typeof s.participantId!=='string'||typeof s.strokeId!=='string'||!this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(s.participantId,s.strokeId))) throw new Error('INVALID_MODERATION');
     this.db.exec('BEGIN IMMEDIATE'); let revision:number;
     try {
-      revision=this.revision()+1;
-      this.db.prepare('INSERT INTO moderation_actions(revision,participant_id,stroke_id,action,reason,created_at) VALUES(?,?,?,?,?,?)').run(revision,participantId,strokeId,action,reason,new Date().toISOString());
+      revision=this.revision();
+      for(const stroke of strokes)this.db.prepare('INSERT INTO moderation_actions(revision,participant_id,stroke_id,action,reason,created_at) VALUES(?,?,?,?,?,?)').run(++revision,stroke.participantId,stroke.strokeId,action,reason,new Date().toISOString());
       this.db.prepare('UPDATE project SET moderation_revision=? WHERE id=1').run(revision);
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }

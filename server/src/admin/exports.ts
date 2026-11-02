@@ -12,7 +12,7 @@ import type { Store } from '../database/store';
 type Query={seq?:string;at?:string;moderation?:string;scale?:string};
 export function registerExports(app:FastifyInstance,store:Store,dbPath:string) {
   let active=0;
-  async function image(req:FastifyRequest,reply:FastifyReply,overlayOnly:boolean) {
+  async function image(req:FastifyRequest,reply:FastifyReply,overlayOnly:boolean,overrides?:{participantId:string;strokeId:string;action:'hide'|'restore'}[]) {
     const q=req.query as Query, p=store.db.prepare('SELECT palette_json,base_image_path,moderation_revision FROM project WHERE id=1').get() as {palette_json:string;base_image_path:string|null;moderation_revision:number};
     const mode=q.moderation || 'moderated', scale=q.scale===undefined?1:Number(q.scale);
     if ((mode!=='raw'&&mode!=='moderated') || !Number.isInteger(scale)||scale<1||scale>8 || (q.seq!==undefined&&q.at!==undefined)) return reply.code(400).send({error:'INVALID_QUERY'});
@@ -28,7 +28,7 @@ export function registerExports(app:FastifyInstance,store:Store,dbPath:string) {
       const worker=spawn(process.execPath,['--max-old-space-size=384','--import','tsx',fileURLToPath(new URL('../../../scripts/render-image.ts',import.meta.url))],{stdio:['pipe','ignore','pipe']});
       let stderr='';worker.stderr.on('data',data=>{stderr=(stderr+String(data)).slice(-4096);});worker.stdin.on('error',()=>{});
       const finished=new Promise<void>((resolve,reject)=>{worker.once('error',reject);worker.once('close',code=>code===0?resolve():reject(new Error(`Image worker failed (${code}): ${stderr}`)));});
-      const timeout=setTimeout(()=>worker.kill('SIGKILL'),300000);worker.stdin.end(JSON.stringify({database,output,snapshotDirectory:join(dirname(dbPath),'snapshots'),target,revision:p.moderation_revision,mode,scale,palette:JSON.parse(p.palette_json),baseImagePath:p.base_image_path,overlay:overlayOnly}));
+      const timeout=setTimeout(()=>worker.kill('SIGKILL'),300000);worker.stdin.end(JSON.stringify({database,output,snapshotDirectory:join(dirname(dbPath),'snapshots'),target,revision:p.moderation_revision,mode,scale,palette:JSON.parse(p.palette_json),baseImagePath:p.base_image_path,overlay:overlayOnly,overrides}));
       try {await finished;} finally {clearTimeout(timeout);}
       const directory=dir,stream=createReadStream(output),cleanup=()=>{if(!handedOff)return;handedOff=false;void rm(directory,{recursive:true,force:true});active--;};handedOff=true;stream.once('close',cleanup);stream.once('error',cleanup);reply.raw.once('close',()=>stream.destroy());
       return reply.header('Cache-Control','no-store').header('X-Art-Sequence',target).header('X-Art-Moderation-Revision',p.moderation_revision).header('X-Art-Moderation',mode).type('image/png').send(stream);
@@ -38,6 +38,7 @@ export function registerExports(app:FastifyInstance,store:Store,dbPath:string) {
   app.get('/api/admin/image.png',imageRoute(false));
   app.get('/api/admin/export/final.png',imageRoute(false));
   app.get('/api/admin/export/overlay.png',imageRoute(true));
+  app.post('/api/admin/moderation/preview',async(req,reply)=>{const b=req.body as {strokes?:{participantId:string;strokeId:string}[];action?:unknown};if(!Array.isArray(b?.strokes)||b.strokes.length<1||b.strokes.length>50||(b.action!=='hide'&&b.action!=='restore')||b.strokes.some(s=>!s||typeof s.participantId!=='string'||typeof s.strokeId!=='string'||!store.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(s.participantId,s.strokeId)))return reply.code(400).send({error:'INVALID_MODERATION'});return image(req,reply,false,b.strokes.map(s=>({...s,action:b.action as 'hide'|'restore'})));});
   async function jsonl(reply:FastifyReply,kind:'events'|'moderation') {
     if(active>=2)return reply.code(429).send({error:'EXPORT_BUSY'});active++;
     let dir:string|undefined,source:DatabaseSync|undefined,copy:DatabaseSync|undefined,handedOff=false;
