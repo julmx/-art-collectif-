@@ -15,6 +15,7 @@ export class CollaborationClient {
   private revision = 0;
   private ready = false;
   private connected = false;
+  private banned = false;
   private status = 'draft';
   private palette: string[] = [];
   constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void) {}
@@ -31,6 +32,7 @@ export class CollaborationClient {
     socket.on('canvas:reset',(state:State)=>{ for (const p of this.pending) p.preview=false; this.install(state,true); });
     socket.on('project:updated',()=>window.dispatchEvent(new Event('project:updated')));
     socket.on('project:status',(message:{status:string})=>{ this.status=message.status; this.emit(); });
+    socket.on('participant:restriction',(message:{banned:boolean})=>{this.banned=message.banned;if(this.banned)this.pending=[];this.emit(true);});
     socket.on('draw:applied',(update:Update)=>this.apply(update));
     socket.connect();
   }
@@ -66,6 +68,6 @@ export class CollaborationClient {
   private emit(reset=false) {
     const display=this.confirmed.slice();
     for (const {command:c,preview} of this.pending) if (preview) applyCells(display,paintBrush(c.points,c.size,c.colorId));
-    this.changed(display,this.ready && this.connected && this.status==='open',this.connected ? this.status : 'disconnected',this.palette,reset);
+    this.changed(display,this.ready && this.connected && this.status==='open'&&!this.banned,this.connected ? (this.banned?'banned':this.status) : 'disconnected',this.palette,reset);
   }
 }

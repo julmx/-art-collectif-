@@ -57,6 +57,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
     socket.data.queuedBytes=0;socket.conn.on('drain',()=>{socket.data.queuedBytes=0;});
+    socket.emit('participant:restriction',{banned:store.isBanned(socket.data.participantId as string)});
     socket.emit('canvas:state',state());
     socket.on('disconnect', () => { if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string); });
     socket.on('canvas:resync', () => { if (store.healthy) socket.emit('canvas:state',state()); else socket.disconnect(true); });

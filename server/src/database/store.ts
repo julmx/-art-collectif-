@@ -36,11 +36,15 @@ export class Store {
       CREATE INDEX IF NOT EXISTS draw_stroke ON draw_events(participant_id,stroke_id);
       CREATE TABLE IF NOT EXISTS terms_history (id INTEGER PRIMARY KEY, terms TEXT NOT NULL, effective_after_seq INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL UNIQUE, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('hide','restore')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS participant_sanctions (id INTEGER PRIMARY KEY, participant_id TEXT NOT NULL REFERENCES participants(id), action TEXT NOT NULL CHECK(action IN ('ban','unban')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS participant_sanction_history ON participant_sanctions(participant_id,id);
       CREATE INDEX IF NOT EXISTS moderation_stroke ON moderation_actions(participant_id,stroke_id,revision);
       CREATE TRIGGER IF NOT EXISTS draw_events_no_update BEFORE UPDATE ON draw_events BEGIN SELECT RAISE(ABORT,'draw_events is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS draw_events_no_delete BEFORE DELETE ON draw_events BEGIN SELECT RAISE(ABORT,'draw_events is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS moderation_no_update BEFORE UPDATE ON moderation_actions BEGIN SELECT RAISE(ABORT,'moderation_actions is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS moderation_no_delete BEFORE DELETE ON moderation_actions BEGIN SELECT RAISE(ABORT,'moderation_actions is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS sanctions_no_update BEFORE UPDATE ON participant_sanctions BEGIN SELECT RAISE(ABORT,'participant_sanctions is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS sanctions_no_delete BEFORE DELETE ON participant_sanctions BEGIN SELECT RAISE(ABORT,'participant_sanctions is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS terms_no_update BEFORE UPDATE ON terms_history BEGIN SELECT RAISE(ABORT,'terms_history is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS terms_no_delete BEFORE DELETE ON terms_history BEGIN SELECT RAISE(ABORT,'terms_history is append-only'); END;`);
     const columns = new Set((this.db.prepare('PRAGMA table_info(project)').all() as {name:string}[]).map(c=>c.name));
@@ -57,6 +61,11 @@ export class Store {
     return row?.action === 'hide';
   }
   revision():number { return (this.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision; }
+  isBanned(participantId:string):boolean {return (this.db.prepare('SELECT action FROM participant_sanctions WHERE participant_id=? ORDER BY id DESC LIMIT 1').get(participantId) as {action:string}|undefined)?.action==='ban';}
+  sanction(participantId:string,action:'ban'|'unban',reason:string):void {
+    if(!['ban','unban'].includes(action)||!reason.trim()||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
+    this.db.prepare('INSERT INTO participant_sanctions(participant_id,action,reason,created_at) VALUES(?,?,?,?)').run(participantId,action,reason.trim(),new Date().toISOString());
+  }
   replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}): Uint8Array {
     const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
     if (mode === 'moderated') {
@@ -89,6 +98,7 @@ export class Store {
     if (duplicate) return duplicate.command_json === canonical ? {opId:c.opId,accepted:true,seq:duplicate.seq,duplicate:true} : {opId:c.opId,accepted:false,code:'OP_ID_CONFLICT'};
     const reject = (code:string): DrawResult => ({opId:c.opId,accepted:false,code});
     if (!this.healthy) return reject('STORAGE_UNAVAILABLE');
+    if (this.isBanned(participantId)) return reject('PARTICIPANT_BANNED');
     if ((this.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
     if (!Number.isInteger(c.colorId) || c.colorId<1 || c.colorId>24) return reject('INVALID_COLOR');
     if (!Number.isInteger(c.size) || !SIZES.includes(c.size as typeof SIZES[number]) || (c.tool==='pixel' && c.size!==1)) return reject('INVALID_SIZE');
