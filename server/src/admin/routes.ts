@@ -33,18 +33,21 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
     if ((store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'draft') return reply.code(409).send({error:'PROJECT_LOCKED'});
     if(!Buffer.isBuffer(req.body)) return reply.code(400).send({error:'INVALID_PNG'});
     try {
-      const metadata=await sharp(req.body,{limitInputPixels:WIDTH*HEIGHT}).metadata();
-      if(metadata.format!=='png'||metadata.width!==WIDTH||metadata.height!==HEIGHT||metadata.pages && metadata.pages!==1) throw new Error();
+      const metadata=await sharp(req.body,{limitInputPixels:false}).metadata();
+      if(metadata.format!=='png'||metadata.pages && metadata.pages!==1) return reply.code(400).send({error:'INVALID_PNG'});
+      if(metadata.width!==WIDTH||metadata.height!==HEIGHT) return reply.code(400).send({error:'PNG_DIMENSIONS'});
       const {data,info}=await sharp(req.body,{limitInputPixels:WIDTH*HEIGHT}).ensureAlpha().toColourspace('srgb').raw().toBuffer({resolveWithObject:true});
       if(info.channels!==4) throw new Error();
-      for(let i=0;i<data.length;i+=4) if(data[i]!==data[i+1]||data[i]!==data[i+2]||data[i+3]!==255) throw new Error();
+      let transparent=false,colored=false;for(let i=0;i<data.length;i+=4){if(data[i+3]!==255)transparent=true;if(data[i]!==data[i+1]||data[i]!==data[i+2])colored=true;}
+      if(transparent)return reply.code(400).send({error:'PNG_TRANSPARENT'});
+      if(colored)return reply.code(400).send({error:'PNG_NOT_GRAYSCALE'});
+    } catch {return reply.code(400).send({error:'INVALID_PNG'});}
       await mkdir(options.dataDir,{recursive:true,mode:0o700}); const digest=createHash('sha256').update(req.body).digest('hex'); const name=`base-${digest}.png`, path=join(options.dataDir,name), temp=join(options.dataDir,`.${randomBytes(12).toString('hex')}.tmp`);
       await writeFile(temp,req.body,{mode:0o600,flag:'wx'}); await rename(temp,path);
       // Another request could open the project while the PNG is being decoded.
       const result=store.db.prepare("UPDATE project SET base_image_path=?,base_image_checksum=? WHERE id=1 AND status='draft'").run(path,digest);
       if(!result.changes) return reply.code(409).send({error:'PROJECT_LOCKED'});
       return {ok:true,checksum:digest};
-    } catch {return reply.code(400).send({error:'INVALID_PNG'});}
   });
   app.get('/api/admin/config',async(_req,reply)=>{const p=store.db.prepare('SELECT status,palette_json,title,description,participation_terms,started_at,closed_at FROM project WHERE id=1').get() as {status:string;palette_json:string;title:string;description:string;participation_terms:string;started_at:string|null;closed_at:string|null};return reply.header('Cache-Control','no-store').send({status:p.status,palette:JSON.parse(p.palette_json),title:p.title,description:p.description,participationTerms:p.participation_terms,startedAt:p.started_at,closedAt:p.closed_at});});
   app.put('/api/admin/config',async(req,reply)=>{

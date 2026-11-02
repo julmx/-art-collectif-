@@ -22,7 +22,13 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
 
     expect((await app.inject({method:'POST',url:'/api/admin/status',headers:auth,payload:{status:'open'}})).statusCode).toBe(409);
     const bad=await sharp({create:{width:720,height:480,channels:3,background:{r:255,g:0,b:0}}}).png().toBuffer();
-    expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:bad})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:bad})).json().error).toBe('PNG_NOT_GRAYSCALE');
+    const wrongSize=await sharp({create:{width:100,height:100,channels:3,background:'#808080'}}).png().toBuffer();
+    expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:wrongSize})).json().error).toBe('PNG_DIMENSIONS');
+    const tooLarge=await sharp({create:{width:1440,height:960,channels:3,background:'#808080'}}).png().toBuffer();
+    expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:tooLarge})).json().error).toBe('PNG_DIMENSIONS');
+    const transparent=await sharp({create:{width:720,height:480,channels:4,background:{r:100,g:100,b:100,alpha:0.5}}}).png().toBuffer();
+    expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:transparent})).json().error).toBe('PNG_TRANSPARENT');
     const good=await sharp({create:{width:720,height:480,channels:3,background:{r:100,g:100,b:100}}}).png().toBuffer();
     expect((await app.inject({method:'POST',url:'/api/admin/base-image',headers:{...auth,'content-type':'image/png'},payload:good})).statusCode).toBe(200);
     const config={palette:PALETTE,title:'Projet',description:'Description',participationTerms:'Conditions de participation'};
