@@ -53,7 +53,7 @@ Ne jamais ajouter au dépôt secrets, données réelles de participants, sauvega
 
 ## Essai sur un NAS Synology
 
-Le fichier `docker-compose.nas.yml` prépare un environnement de développement séparé, avec des volumes propres et HTTPS local sur le port 8443. Copier le dépôt sur le NAS, créer un fichier privé `.env.nas` avec `DOMAIN` (adresse IP ou nom DNS local du NAS, sans port), `ADMIN_PASSWORD_HASH` et `CODE_REVISION`, puis démarrer depuis le dossier du projet :
+Le fichier `docker-compose.nas.yml` prépare un environnement de développement séparé, avec des volumes propres et HTTPS local sur le port 8443. Copier le dépôt sur le NAS, créer un fichier privé `.env.nas` avec `DOMAIN` (adresse IP ou nom DNS local du NAS, sans port), `LAN_BIND_IP` (adresse IPv4 locale sur laquelle écouter), `ADMIN_PASSWORD_HASH` et `CODE_REVISION`, puis démarrer depuis le dossier du projet :
 
 ```bash
 docker compose --env-file .env.nas -p artcollectif-test -f docker-compose.nas.yml up -d --build

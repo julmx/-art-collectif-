@@ -24,7 +24,7 @@ services:
     environment:
       DOMAIN: ${DOMAIN:?DOMAIN required}
     ports:
-      - "8443:443"
+      - "${LAN_BIND_IP:?LAN_BIND_IP required}:8443:443"
     volumes:
       - ./Caddyfile.nas:/etc/caddy/Caddyfile:ro
       - nas_caddy_data:/data
