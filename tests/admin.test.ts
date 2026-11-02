@@ -35,7 +35,10 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     expect(exported.statusCode).toBe(200); expect(exported.headers['x-art-sequence']).toBe('0');
     const image=await sharp(exported.rawPayload).raw().toBuffer({resolveWithObject:true}); expect([...image.data.subarray(0,3)]).toEqual([100,100,100]);
     const overlay=await app.inject({method:'GET',url:'/api/admin/export/overlay.png',headers:{cookie}}); const rgba=await sharp(overlay.rawPayload).raw().toBuffer(); expect(rgba[3]).toBe(0);
+    const scaled=await app.inject({method:'GET',url:'/api/admin/image.png?seq=1&scale=2',headers:{cookie}});expect(scaled.statusCode).toBe(200);const rendered=await sharp(scaled.rawPayload).raw().toBuffer({resolveWithObject:true});expect(rendered.info.width).toBe(1440);const offset=(4*1440+4)*rendered.info.channels;expect([...rendered.data.subarray(offset,offset+3)]).toEqual([230,57,70]);
+
     expect((await app.inject({method:'GET',url:'/api/admin/image.png?seq=0&at=2026-01-01T00:00:00Z',headers:{cookie}})).statusCode).toBe(400);
+    expect((await app.inject({method:'GET',url:'/api/admin/image.png?at=2026-02-30T00:00:00Z',headers:{cookie}})).statusCode).toBe(400);
 
     expect((await app.inject({method:'PUT',url:'/api/admin/config',headers:auth,payload:{...config,participationTerms:'Nouvelles conditions'}})).statusCode).toBe(200);
     const changed=[...PALETTE]; [changed[0],changed[1]]=[changed[1],changed[0]];

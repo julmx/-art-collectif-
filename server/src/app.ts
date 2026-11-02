@@ -33,7 +33,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   });
   io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); try { store.db.prepare('UPDATE participants SET last_seen_at=? WHERE id=?').run(new Date().toISOString(),participant.id); } catch {return next(new Error('STORAGE_UNAVAILABLE'));} socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
-  registerAdmin(app,store,io,snapshots,{dataDir:dirname(options.dbPath),dbPath:options.dbPath,passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
+  registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),dbPath:options.dbPath,passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
   const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
   // A batch is bounded both by message count and estimated raster work.
