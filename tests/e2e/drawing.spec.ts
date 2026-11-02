@@ -55,6 +55,11 @@ test('interface privée : connexion et consultation de l’historique',async({pa
   await page.getByRole('button',{name:'Se déconnecter'}).click();
   await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
 });
+test('administration : création et téléchargement d’une archive',async({page})=>{
+ await page.goto('/admin.html');await page.getByLabel('Mot de passe').fill('test-password');await page.getByRole('button',{name:'Se connecter'}).click();
+ await page.getByRole('button',{name:'Créer l’archive'}).click();await expect(page.locator('#export-progress')).toContainText('terminée',{timeout:30000});
+ const download=page.waitForEvent('download');await page.locator('#generated-list a').first().click();expect((await download).suggestedFilename()).toMatch(/^archive-.*\.zip$/);
+});
 test('la sortie puis la rentrée du pointeur ne relient pas artificiellement le trait',async({page})=>{
  await page.goto('/');await expect(page.locator('.status')).toContainText('dessin ouvert');const canvas=page.locator('canvas');await canvas.scrollIntoViewIfNeeded();const box=await canvas.boundingBox();if(!box)throw new Error('Canvas invisible');
  const middle=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(350,300,1,1).data]);const before=await middle();const lastRegion=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(498,298,5,5).data]);const beforeLast=await lastRegion();

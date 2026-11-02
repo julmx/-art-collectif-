@@ -1,9 +1,11 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync,writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scryptSync } from 'node:crypto';
+import { scryptSync,createHash } from 'node:crypto';
+import sharp from 'sharp';
 import { createApp } from '../../server/src/app';
 const dir=mkdtempSync(join(tmpdir(),'art-e2e-'));
 const {app,store}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://127.0.0.1:4173',secureCookie:false,adminPasswordHash:`${'01'.repeat(16)}:${scryptSync('test-password',Buffer.from('01'.repeat(16),'hex'),64).toString('hex')}`});
-store.db.prepare("UPDATE project SET status='open'").run();
+const base=await sharp({create:{width:720,height:480,channels:3,background:'#808080'}}).png().toBuffer(),basePath=join(dir,'base.png');writeFileSync(basePath,base);
+store.db.prepare("UPDATE project SET status='open',started_at=?,base_image_path=?,base_image_checksum=?").run(new Date().toISOString(),basePath,createHash('sha256').update(base).digest('hex'));
 await app.listen({port:3000,host:'127.0.0.1'});
