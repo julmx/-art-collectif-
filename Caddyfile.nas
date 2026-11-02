@@ -1,3 +1,7 @@
+{
+    default_sni {$DOMAIN}
+}
+
 https://{$DOMAIN} {
     tls internal
     encode zstd gzip
