@@ -18,6 +18,12 @@ Configurer la valeur affichée dans `ADMIN_PASSWORD_HASH` dans l’environnement
 
 `npm test` exécute les tests unitaires et d’intégration ; `npm run build` vérifie TypeScript et construit les pages. `npx playwright install chromium` puis `npm run test:e2e` exécutent les tests navigateur. L’essai de charge court et ses limites sont décrits dans [ops/ESSAI_COURT.md](ops/ESSAI_COURT.md).
 
+## Modération et bannissement
+
+Dans l’administration, cliquer sur la toile affiche les traits au point choisi ou à une cellule de distance, les traits visibles en premier. Un clic sur un résultat le surligne ; les listes permettent de retrouver les traits masqués ou ceux du même participant et de sélectionner jusqu’à 50 traits. Un aperçu montre l’image résultante avant la confirmation et le motif. Si une contribution ou une décision intervient depuis l’aperçu, il faut le recalculer ; en cas de forte activité, suspendre temporairement le projet. Le masquage reste réversible et porte sur le trait entier.
+
+La recherche examine au maximum les 300 000 commandes les plus récentes et 30 résultats ; l’interface signale une recherche tronquée. La surbrillance de chaque trait est limitée à ses 200 premières parties et le signale si elle est incomplète ; l’aperçu et la décision portent toujours sur le trait entier. Le bannissement est réversible, journalisé et empêche les nouvelles contributions depuis la session concernée, y compris les connexions déjà actives ; il ne masque pas automatiquement les traits et laisse leur consultation possible. Comme les participants sont anonymes et identifiés par un cookie, une personne peut créer une nouvelle session : cette mesure ne garantit pas l’identification ni le blocage durable d’une personne physique.
+
 ## Déploiement prévu
 
 Le dépôt fournit Docker Compose et Caddy. Créer un fichier `.env` privé, non versionné, contenant `DOMAIN`, `ADMIN_PASSWORD_HASH` et `CODE_REVISION` (SHA exact du code déployé). Faire pointer le domaine vers le VPS et autoriser les ports 80 et 443. `docker compose up -d --build` crée les services et les volumes persistants. Ne pas exposer directement le port du serveur Node. La configuration NAS a été construite et testée localement avec Docker Compose classique ; elle reste à vérifier sur le NAS et la configuration VPS reste à valider en production.
