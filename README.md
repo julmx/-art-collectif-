@@ -36,6 +36,8 @@ Les liens de l’administration servent les images et journaux uniquement après
 
 Depuis « Exports privés », un administrateur peut lancer une archive ZIP, éventuellement avec les quatre vidéos, ou une vidéo avec choix du rythme, de la modération, de la durée, du nombre d’images par seconde et de l’agrandissement. L’interface indique si le travail est en cours, terminé ou en échec ; les fichiers terminés restent téléchargeables après redémarrage. Une seule génération longue est acceptée à la fois. La vidéo est limitée à 600 secondes, 30 images/s, 9 000 images et un agrandissement de 3 ; les archives contenant des vidéos peuvent prendre beaucoup de temps. Un redémarrage interrompt une génération en cours. Les traitements tournent dans un processus distinct de priorité réduite, avec une limite de mémoire JavaScript ; ils partagent néanmoins les ressources du conteneur applicatif.
 
+Les fichiers sont triés du plus récent au plus ancien. Pour les nouveaux exports, un fichier de métadonnées privé conserve la fin de la capture, la séquence et les paramètres utilisés ; leur absence sur les anciens exports ne permet pas de retrouver ces informations. Pour ces derniers, seule la date de dernière modification du fichier est affichée.
+
 ```bash
 node --import tsx scripts/export-video.ts --database /data/art.sqlite --output /data/video.mp4 --mode chronological --moderation moderated --duration 180 --fps 25 --scale 2
 node --import tsx scripts/export-archive.ts --database /data/art.sqlite --output /data/archives/experience.zip --moderation moderated --videos false

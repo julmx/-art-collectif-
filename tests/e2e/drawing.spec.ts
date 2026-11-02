@@ -59,6 +59,7 @@ test('interface privée : connexion et consultation de l’historique',async({pa
 test('administration : création et téléchargement d’une archive',async({page})=>{
  await page.goto('/admin.html');await page.getByLabel('Mot de passe').fill('test-password');await page.getByRole('button',{name:'Se connecter'}).click();
  await page.getByRole('button',{name:'Créer l’archive'}).click();await expect(page.locator('#export-progress')).toContainText('terminée',{timeout:30000});
+ await expect(page.locator('#generated-list article').first()).toContainText('Archive ZIP');await expect(page.locator('#generated-list article').first()).toContainText('Capture terminée le');await expect(page.locator('#generated-list article').first()).toContainText('contribution n°');
  const download=page.waitForEvent('download');await page.locator('#generated-list a').first().click();expect((await download).suggestedFilename()).toMatch(/^archive-.*\.zip$/);
 });
 test('la sortie puis la rentrée du pointeur ne relient pas artificiellement le trait',async({page})=>{
