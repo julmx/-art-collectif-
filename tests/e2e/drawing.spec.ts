@@ -43,6 +43,8 @@ test('interface privée : connexion et consultation de l’historique',async({pa
   await page.getByLabel('Mot de passe').fill('test-password');
   await page.getByRole('button',{name:'Se connecter'}).click();
   await expect(page.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
+  await expect(page.locator('#palette-feedback')).toContainText('Palette valide');
+  await expect(page.locator('#palette-preview span')).toHaveCount(24);
   await page.getByRole('button',{name:'Actualiser l’historique'}).click();
   await expect(page.locator('#events pre').first()).toBeVisible();
   await page.getByRole('button',{name:'Se déconnecter'}).click();
