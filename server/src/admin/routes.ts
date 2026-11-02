@@ -82,13 +82,13 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
   });
   app.post('/api/admin/moderation',async(req,reply)=>{
     const b=req.body as {participantId?:unknown;strokeId?:unknown;action?:unknown;reason?:unknown};
-    if(typeof b?.participantId!=='string'||typeof b.strokeId!=='string'||(b.action!=='hide'&&b.action!=='restore')||typeof b.reason!=='string') return reply.code(400).send({error:'INVALID_MODERATION'});
-    try { const revision=store.moderate(b.participantId,b.strokeId,b.action,b.reason); io.emit('canvas:reset',options.state()); return {revision}; } catch {if(!store.healthy){io.disconnectSockets(true);return reply.code(503).send({error:'STORAGE_UNAVAILABLE'});}return reply.code(400).send({error:'INVALID_MODERATION'});}
+    if(typeof b?.participantId!=='string'||typeof b.strokeId!=='string'||(b.action!=='hide'&&b.action!=='restore')||(b.reason!==undefined&&typeof b.reason!=='string')) return reply.code(400).send({error:'INVALID_MODERATION'});
+    try { const revision=store.moderate(b.participantId,b.strokeId,b.action,typeof b.reason==='string'?b.reason:''); io.emit('canvas:reset',options.state()); return {revision}; } catch {if(!store.healthy){io.disconnectSockets(true);return reply.code(503).send({error:'STORAGE_UNAVAILABLE'});}return reply.code(400).send({error:'INVALID_MODERATION'});}
   });
   app.post('/api/admin/participant-sanction',async(req,reply)=>{
     const b=req.body as {participantId?:unknown;action?:unknown;reason?:unknown;confirmation?:unknown};
-    if(typeof b?.participantId!=='string'||(b.action!=='ban'&&b.action!=='unban')||typeof b.reason!=='string'||(b.action==='ban'&&b.confirmation!=='BANNIR'))return reply.code(400).send({error:'INVALID_SANCTION'});
-    try{store.sanction(b.participantId,b.action,b.reason);for(const socket of io.sockets.sockets.values())if(socket.data.participantId===b.participantId)socket.emit('participant:restriction',{banned:b.action==='ban'});return {ok:true,banned:b.action==='ban'};}catch{return reply.code(400).send({error:'INVALID_SANCTION'});}
+    if(typeof b?.participantId!=='string'||(b.action!=='ban'&&b.action!=='unban')||(b.reason!==undefined&&typeof b.reason!=='string')||(b.action==='ban'&&b.confirmation!=='BANNIR'))return reply.code(400).send({error:'INVALID_SANCTION'});
+    try{store.sanction(b.participantId,b.action,typeof b.reason==='string'?b.reason:'');for(const socket of io.sockets.sockets.values())if(socket.data.participantId===b.participantId)socket.emit('participant:restriction',{banned:b.action==='ban'});return {ok:true,banned:b.action==='ban'};}catch{return reply.code(400).send({error:'INVALID_SANCTION'});}
   });
   app.get('/api/admin/archives',async(_req,reply)=>{
     const dir=join(options.dataDir,'archives'); const entries=await readdir(dir,{withFileTypes:true}).catch(()=>[]); const archives=entries.filter(e=>e.isFile()&&/^[A-Za-z0-9_-]{1,100}\.zip$/.test(e.name)).map(e=>({id:e.name.slice(0,-4)}));return reply.header('Cache-Control','no-store').send({archives});

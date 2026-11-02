@@ -63,7 +63,7 @@ export class Store {
   revision():number { return (this.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision; }
   isBanned(participantId:string):boolean {return (this.db.prepare('SELECT action FROM participant_sanctions WHERE participant_id=? ORDER BY id DESC LIMIT 1').get(participantId) as {action:string}|undefined)?.action==='ban';}
   sanction(participantId:string,action:'ban'|'unban',reason:string):void {
-    if(!['ban','unban'].includes(action)||!reason.trim()||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
+    if(!['ban','unban'].includes(action)||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
     this.db.prepare('INSERT INTO participant_sanctions(participant_id,action,reason,created_at) VALUES(?,?,?,?)').run(participantId,action,reason.trim(),new Date().toISOString());
   }
   replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}, overrides?:{participantId:string;strokeId:string;action:'hide'|'restore'}[]): Uint8Array {
@@ -84,7 +84,7 @@ export class Store {
     return this.moderateMany([{participantId,strokeId}],action,reason);
   }
   moderateMany(strokes:{participantId:string;strokeId:string}[],action:'hide'|'restore',reason:string): number {
-    if (!Array.isArray(strokes)||strokes.length<1||strokes.length>50||!reason.trim()||reason.length>1000||!['hide','restore'].includes(action)||new Set(strokes.map(s=>JSON.stringify([s.participantId,s.strokeId]))).size!==strokes.length||strokes.some(s=>typeof s.participantId!=='string'||typeof s.strokeId!=='string'||!this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(s.participantId,s.strokeId))) throw new Error('INVALID_MODERATION');
+    if (!Array.isArray(strokes)||strokes.length<1||strokes.length>50||reason.length>1000||!['hide','restore'].includes(action)||new Set(strokes.map(s=>JSON.stringify([s.participantId,s.strokeId]))).size!==strokes.length||strokes.some(s=>typeof s.participantId!=='string'||typeof s.strokeId!=='string'||!this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(s.participantId,s.strokeId))) throw new Error('INVALID_MODERATION');
     this.db.exec('BEGIN IMMEDIATE'); let revision:number;
     try {
       revision=this.revision();
