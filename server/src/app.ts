@@ -8,6 +8,7 @@ import { PALETTE } from '../../shared/palette';
 import { registerAdmin } from './admin/routes';
 import { dirname, join } from 'node:path';
 import { Snapshots } from './renderer/snapshots';
+import { applyModeration } from './admin/moderation-apply';
 
 export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean }) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 16 * 1024 });
@@ -61,6 +62,15 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     socket.emit('canvas:state',state());
     socket.on('disconnect', () => { if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string); });
     socket.on('canvas:resync', () => { if (store.healthy) socket.emit('canvas:state',state()); else socket.disconnect(true); });
+    socket.on('draw:undo', async (ack:unknown) => {
+      if (typeof ack !== 'function') return;
+      const reply=ack as (result:unknown)=>void, participantId=socket.data.participantId as string;
+      if (!store.healthy || store.isBanned(participantId) || (store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') { reply({ok:false,code:'UNAVAILABLE'}); return; }
+      const row=store.db.prepare(`SELECT e.stroke_id FROM draw_events e WHERE e.participant_id=? AND e.final=1 AND COALESCE((SELECT a.action FROM moderation_actions a WHERE a.participant_id=e.participant_id AND a.stroke_id=e.stroke_id ORDER BY a.revision DESC LIMIT 1),'restore') != 'hide' ORDER BY e.seq DESC LIMIT 1`).get(participantId) as {stroke_id:string}|undefined;
+      if (!row) { reply({ok:false,code:'EMPTY'}); return; }
+      try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); io.emit('canvas:reset',state()); reply({ok:true}); }
+      catch(error) { app.log.error(error,'undo failed'); if(!store.healthy)io.disconnectSockets(true); reply({ok:false,code:'UNAVAILABLE'}); }
+    });
     socket.on('draw:submit',(input:unknown,ack:unknown) => {
       if (typeof ack !== 'function') return;
       const id = socket.data.participantId as string, now = Date.now();

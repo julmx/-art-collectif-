@@ -95,6 +95,19 @@ export class Store {
     this.healthy=false;
     this.rebuild(); this.healthy=true; return revision;
   }
+  validateModeration(strokes:{participantId:string;strokeId:string}[],action:'hide'|'restore',reason:string):void {
+    if (!Array.isArray(strokes)||strokes.length<1||strokes.length>50||reason.length>1000||!['hide','restore'].includes(action)||strokes.some(s=>!s||typeof s.participantId!=='string'||typeof s.strokeId!=='string')||new Set(strokes.map(s=>JSON.stringify([s.participantId,s.strokeId]))).size!==strokes.length||strokes.some(s=>!this.db.prepare('SELECT 1 FROM draw_events WHERE participant_id=? AND stroke_id=?').get(s.participantId,s.strokeId))) throw new Error('INVALID_MODERATION');
+  }
+  commitModeration(strokes:{participantId:string;strokeId:string}[],action:'hide'|'restore',reason:string,grid:Uint8Array):number {
+    this.db.exec('BEGIN IMMEDIATE'); let revision:number;
+    try {
+      revision=this.revision();
+      for(const stroke of strokes)this.db.prepare('INSERT INTO moderation_actions(revision,participant_id,stroke_id,action,reason,created_at) VALUES(?,?,?,?,?,?)').run(++revision,stroke.participantId,stroke.strokeId,action,reason,new Date().toISOString());
+      this.db.prepare('UPDATE project SET moderation_revision=? WHERE id=1').run(revision);
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    this.grid=grid; return revision;
+  }
   submit(participantId: string, input: unknown): DrawResult {
     const parsed = validate(input); if (!parsed.command) return {opId:parsed.opId,accepted:false,code:parsed.code!};
     const c = parsed.command, canonical = JSON.stringify(c);

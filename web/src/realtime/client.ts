@@ -18,6 +18,7 @@ export class CollaborationClient {
   private banned = false;
   private status = 'draft';
   private palette: string[] = [];
+  private undoing = false;
   constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void) {}
   async connect() {
     const response = await fetch('/api/session',{method:'POST',credentials:'same-origin'});
@@ -37,6 +38,14 @@ export class CollaborationClient {
     socket.connect();
   }
   submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open' || this.pending.length >= 256) return false; this.pending.push({command,sent:false,preview:true}); this.emit(); this.flush(); return true; }
+  canUndo() { return !this.undoing && this.pending.length === 0; }
+  async undo():Promise<'ok'|'empty'|'error'> {
+    if (!this.connected || !this.ready || this.status !== 'open' || this.banned || !this.canUndo()) return 'error';
+    this.undoing=true; this.emit();
+    try { const result = await this.socket!.timeout(120000).emitWithAck('draw:undo'); return result?.ok ? 'ok' : result?.code === 'EMPTY' ? 'empty' : 'error'; }
+    catch { return 'error'; }
+    finally { this.undoing=false; this.emit(); }
+  }
   private install(state:State, reset=false) {
     if (state.grid.length !== WIDTH * HEIGHT || !Number.isSafeInteger(state.seq)) { this.socket?.disconnect(); return; }
     this.confirmed = Uint8Array.from(state.grid); this.seq=state.seq; this.revision=state.moderationRevision; this.status=state.status; this.palette=state.palette; this.ready=true;
@@ -68,6 +77,6 @@ export class CollaborationClient {
   private emit(reset=false) {
     const display=this.confirmed.slice();
     for (const {command:c,preview} of this.pending) if (preview) applyCells(display,paintBrush(c.points,c.size,c.colorId));
-    this.changed(display,this.ready && this.connected && this.status==='open'&&!this.banned,this.connected ? (this.banned?'banned':this.status) : 'disconnected',this.palette,reset);
+    this.changed(display,this.ready && this.connected && this.status==='open'&&!this.banned&&!this.undoing,this.connected ? (this.banned?'banned':this.status) : 'disconnected',this.palette,reset);
   }
 }

@@ -30,3 +30,27 @@ it('synchronise deux clients et ne rediffuse pas une retransmission', async () =
 
   } finally {a?.disconnect();b?.disconnect();await app.close();rmSync(dir,{recursive:true,force:true});}
 },15000);
+
+it('annule les tracés du participant sans effacer ceux des autres', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'art-undo-'));
+  const {app,store}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false});
+  const sockets:Socket[]=[];
+  try {
+    await app.listen({port:0,host:'127.0.0.1'});
+    const address=app.server.address(); if(!address || typeof address==='string') throw new Error('address');
+    store.db.prepare("UPDATE project SET status='open'").run();
+    for(let i=0;i<2;i++) {
+      const session=await app.inject({method:'POST',url:'/api/session',headers:{origin:'http://localhost:4173'}});
+      const socket=client(`http://127.0.0.1:${address.port}`,{extraHeaders:{cookie:session.headers['set-cookie'] as string,origin:'http://localhost:4173'},transports:['websocket'],autoConnect:false});
+      sockets.push(socket); const ready=new Promise<void>(resolve=>socket.once('canvas:state',()=>resolve())); socket.connect(); await ready;
+    }
+    const draw=async (socket:Socket,colorId:number,points:number[][])=>socket.emitWithAck('draw:submit',{opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'brush',colorId,size:1,points});
+    expect((await draw(sockets[0],1,[[4,5],[5,5]])).accepted).toBe(true);
+    expect((await draw(sockets[1],2,[[5,5]])).accepted).toBe(true);
+    const reset=new Promise<any>(resolve=>sockets[1].once('canvas:reset',resolve));
+    expect(await sockets[0].timeout(15000).emitWithAck('draw:undo')).toEqual({ok:true});
+    const state=await reset; expect(state.grid[5*720+4]).toBe(0); expect(state.grid[5*720+5]).toBe(2);
+    expect(await sockets[0].emitWithAck('draw:undo')).toEqual({ok:false,code:'EMPTY'});
+    expect(store.grid[5*720+5]).toBe(2);
+  } finally { sockets.forEach(s=>s.disconnect()); await app.close(); rmSync(dir,{recursive:true,force:true}); }
+},30000);
