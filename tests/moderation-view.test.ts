@@ -19,3 +19,18 @@ it('repère les traits superposés et prévisualise les décisions sans modifier
  expect((await app.inject({method:'POST',url:'/api/admin/moderation/batch',headers,payload:{...decision,strokes:both,expectedRevision:2}})).statusCode).toBe(200);expect(store.revision()).toBe(4);expect(store.grid[20*720+10]).toBe(0);
  }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 },30000);
+
+it('rejette une décision périmée si une contribution arrive pendant la reconstruction',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'art-race-')),origin='http://localhost:4173',salt=randomBytes(16),password='test-password';
+ const {app,store}=await createApp({dbPath:join(dir,'db.sqlite'),origin,secureCookie:false,adminPasswordHash:`${salt.toString('hex')}:${scryptSync(password,salt,64).toString('hex')}`});
+ try {
+  const login=await app.inject({method:'POST',url:'/api/admin/login',headers:{origin},payload:{password}}),cookie=(login.headers['set-cookie'] as string).split(';')[0];
+  store.db.prepare("UPDATE project SET status='open'").run();store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();
+  const strokeId=randomUUID();store.submit('p',{opId:randomUUID(),strokeId,partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[1,1]]});
+  const pending=app.inject({method:'POST',url:'/api/admin/moderation/batch',headers:{origin,cookie},payload:{strokes:[{participantId:'p',strokeId}],action:'hide',confirmation:'CONFIRMER',expectedSeq:1,expectedRevision:0}});
+  await new Promise(resolve=>setTimeout(resolve,50));
+  expect((await app.inject({method:'GET',url:'/api/health'})).statusCode).toBe(200);
+  const result=store.submit('p',{opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:2,size:1,points:[[1,1]]});expect(result.accepted).toBe(true);
+  const decision=await pending;expect(decision.statusCode).toBe(409);expect(decision.json().error).toBe('MODERATION_STATE_CHANGED');expect(store.seq).toBe(2);expect(store.revision()).toBe(0);expect(store.grid[721]).toBe(2);
+ } finally {await app.close();rmSync(dir,{recursive:true,force:true});}
+},15000);

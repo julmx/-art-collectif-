@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 test('la toile utilise la place disponible sur ordinateur et tient sur mobile',async({page})=>{
   await page.setViewportSize({width:1600,height:1000});await page.goto('/');
   const canvas=page.locator('canvas');const desktop=await canvas.boundingBox();expect(desktop).not.toBeNull();expect(desktop!.width).toBeGreaterThan(1000);
-  await page.setViewportSize({width:375,height:812});const mobile=await canvas.boundingBox(),viewport=await page.locator('#viewport').boundingBox();expect(mobile).not.toBeNull();expect(viewport).not.toBeNull();expect(mobile!.width).toBeLessThanOrEqual(viewport!.width);expect(mobile!.width).toBeGreaterThan(250);
+  await page.setViewportSize({width:375,height:812});const mobile=await canvas.boundingBox(),viewport=await page.locator('#viewport').boundingBox();expect(mobile).not.toBeNull();expect(viewport).not.toBeNull();expect(mobile!.width).toBeLessThanOrEqual(viewport!.width);expect(mobile!.width).toBeGreaterThan(250);const zoom=await page.locator('#zoom-in').boundingBox(), tools=await page.locator('aside').boundingBox();expect(zoom).not.toBeNull();expect(tools).not.toBeNull();expect(zoom!.y).toBeLessThan(tools!.y);expect(zoom!.y).toBeLessThan(812);
 });
 test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ page }) => {
   await page.goto('/');
@@ -48,6 +48,7 @@ test('interface privée : connexion et consultation de l’historique',async({pa
   await page.getByLabel('Mot de passe').fill('test-password');
   await page.getByRole('button',{name:'Se connecter'}).click();
   await expect(page.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
+  await expect(page.locator('#project-status')).toHaveText('Ouvert');await expect(page.locator('[data-status=open]')).toBeDisabled();await expect(page.locator('[data-status=paused]')).toBeEnabled();await expect(page.locator('#config-details')).not.toHaveAttribute('open','');await page.locator('#config-details summary').click();await expect(page.locator('[name=palette]')).toHaveAttribute('readonly','');await expect(page.locator('#base input')).toBeDisabled();
   await expect(page.locator('#palette-feedback')).toContainText('Palette valide');
   await expect(page.locator('#palette-preview span')).toHaveCount(24);
   await expect(page.getByLabel('Identifiant participant')).toHaveCount(0);await expect(page.getByLabel('Identifiant du trait')).toHaveCount(0);

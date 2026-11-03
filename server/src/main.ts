@@ -9,5 +9,5 @@ const parsed=new URL(origin), local=['localhost','127.0.0.1','[::1]'].includes(p
 if (parsed.origin!==origin || (!local && parsed.protocol!=='https:') || !['http:','https:'].includes(parsed.protocol)) throw new Error('APP_ORIGIN must be an HTTPS origin (HTTP permitted only on loopback)');
 const passwordHash=process.env.ADMIN_PASSWORD_HASH;
 if(!local && !/^[a-f0-9]{32}:[a-f0-9]{128}$/i.test(passwordHash || '')) throw new Error('A valid ADMIN_PASSWORD_HASH is required');
-const {app} = await createApp({dbPath:resolve(dir,'art.sqlite'),origin,adminPasswordHash:passwordHash,secureCookie:!local,logger:true});
+const {app} = await createApp({dbPath:resolve(dir,'art.sqlite'),origin,adminPasswordHash:passwordHash,secureCookie:!local,logger:true,trustedProxy:process.env.TRUSTED_PROXY});
 await app.listen({port:Number(process.env.PORT || 3000),host:process.env.HOST || '127.0.0.1'});

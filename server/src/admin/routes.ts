@@ -10,6 +10,7 @@ import { WIDTH, HEIGHT } from '../../../shared/raster';
 import type { Store } from '../database/store';
 import { registerExports } from './exports';
 import { registerExportJobs } from './jobs';
+import { applyModeration } from './moderation-apply';
 import { registerModerationView } from './moderation-view';
 
 export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:{dataDir:string;dbPath:string;passwordHash?:string;secureCookie:boolean; state:()=>unknown}) {
@@ -54,7 +55,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
       return {ok:true,checksum:digest};
   });
   app.get('/api/admin/config',async(_req,reply)=>{const p=store.db.prepare('SELECT status,palette_json,title,description,participation_terms,started_at,closed_at FROM project WHERE id=1').get() as {status:string;palette_json:string;title:string;description:string;participation_terms:string;started_at:string|null;closed_at:string|null};return reply.header('Cache-Control','no-store').send({status:p.status,palette:JSON.parse(p.palette_json),title:p.title,description:p.description,participationTerms:p.participation_terms,startedAt:p.started_at,closedAt:p.closed_at});});
-  app.put('/api/admin/config',async(req,reply)=>{
+  app.put('/api/admin/config',{bodyLimit: 256 * 1024},async(req,reply)=>{
     const body=req.body as {palette?:unknown;title?:unknown;description?:unknown;participationTerms?:unknown};
     if (!body || !Array.isArray(body.palette) || !validPalette(body.palette) || typeof body.title!=='string' || !body.title.trim() || body.title.length>160 || typeof body.description!=='string' || body.description.length>4000 || typeof body.participationTerms!=='string' || !body.participationTerms.trim() || body.participationTerms.length>20000) return reply.code(400).send({error:'INVALID_CONFIG'});
     const current=store.db.prepare('SELECT status,palette_json,participation_terms FROM project WHERE id=1').get() as {status:string;palette_json:string;participation_terms:string};
@@ -83,7 +84,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
   app.post('/api/admin/moderation',async(req,reply)=>{
     const b=req.body as {participantId?:unknown;strokeId?:unknown;action?:unknown;reason?:unknown};
     if(typeof b?.participantId!=='string'||typeof b.strokeId!=='string'||(b.action!=='hide'&&b.action!=='restore')||(b.reason!==undefined&&typeof b.reason!=='string')) return reply.code(400).send({error:'INVALID_MODERATION'});
-    try { const revision=store.moderate(b.participantId,b.strokeId,b.action,typeof b.reason==='string'?b.reason:''); io.emit('canvas:reset',options.state()); return {revision}; } catch {if(!store.healthy){io.disconnectSockets(true);return reply.code(503).send({error:'STORAGE_UNAVAILABLE'});}return reply.code(400).send({error:'INVALID_MODERATION'});}
+    try { const revision=await applyModeration(store,options.dbPath,[{participantId:b.participantId,strokeId:b.strokeId}],b.action,typeof b.reason==='string'?b.reason:'',store.seq,store.revision()); io.emit('canvas:reset',options.state()); return {revision}; } catch(error) {if(error instanceof Error && error.message==='MODERATION_BUSY')return reply.code(429).send({error:'MODERATION_BUSY'});if(error instanceof Error && error.message==='MODERATION_STATE_CHANGED')return reply.code(409).send({error:'MODERATION_STATE_CHANGED'});if(!store.healthy){io.disconnectSockets(true);return reply.code(503).send({error:'STORAGE_UNAVAILABLE'});}if(error instanceof Error && error.message==='INVALID_MODERATION')return reply.code(400).send({error:'INVALID_MODERATION'});app.log.error(error,'moderation rebuild failed');return reply.code(503).send({error:'STORAGE_UNAVAILABLE'});}
   });
   app.post('/api/admin/participant-sanction',async(req,reply)=>{
     const b=req.body as {participantId?:unknown;action?:unknown;reason?:unknown;confirmation?:unknown};

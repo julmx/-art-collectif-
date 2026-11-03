@@ -21,3 +21,10 @@ Le 2 novembre, deux nouvelles exécutions mixtes courtes sur le code courant ont
 Le 2 novembre 2026, `npx tsx scripts/load-full.ts 1800` a exécuté le scénario mixte pendant 30 minutes sur le poste WSL décrit ci-dessus, avec le serveur et les clients dans des processus séparés. La version exécutée était `7e8179e` ; des travaux locaux ont eu lieu en parallèle. Sur 899 737 commandes envoyées, 892 611 ont été acquittées et 7 126 rejetées ; 73 110 retransmissions ont été enregistrées. La file a culminé à 2 558 et a été vidée. Le p95 d'acquittement est de 2 883,62 ms : **le seuil de 500 ms n'est pas atteint**. Le RSS maximal observé du serveur était de 399 421 440 octets ; la base et son WAL occupaient 678 550 984 octets.
 
 Les 50 clients resynchronisés ont convergé avec le serveur et le rejeu ; aucune rupture de séquence n'a été relevée. Une sauvegarde SQLite locale a réussi. Ce résultat ne constitue pas la recette de production : le VPS, les sauvegardes extérieures et leur restauration, ainsi que l'ensemble des scénarios de charge requis, restent à vérifier. Les rejets et retransmissions appellent une analyse avant de retenir une capacité.
+
+
+## Instrumentation après revue du 2 novembre
+
+Le générateur distingue désormais les refus par code, les retransmissions par cause (expiration d’acquittement, limitation ou stockage indisponible) et les commandes non envoyées lorsque sa propre file atteint sa limite. Les chiffres historiques ne contiennent pas ces catégories : ils ne permettent donc pas d’attribuer les 7 126 rejets à une cause précise. Une nouvelle mesure instrumentée est nécessaire.
+
+Un essai local de 10 secondes après ces changements a envoyé et acquitté 5 049 commandes, sans rejet ni retransmission ; p95 : 276,46 ms ; convergence et rejeu réussis. Il a chevauché la fin de la suite de tests navigateur et reste indicatif. Il ne valide ni la charge prolongée, ni l’hébergement cible.

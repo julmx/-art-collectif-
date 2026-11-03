@@ -58,3 +58,19 @@ it('protège la configuration, valide le fond et verrouille les paramètres à l
     expect((await app.inject({method:'GET',url:'/api/admin/events',headers:{cookie}})).statusCode).toBe(401);
   } finally {await app.close();rmSync(dir,{recursive:true,force:true});}
 },15000);
+
+it('isole les tentatives derrière le seul proxy de confiance et accepte les conditions UTF-8 longues',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'art-proxy-')),origin='http://localhost:4173',salt=randomBytes(16),password='correct';
+ const {app}=await createApp({dbPath:join(dir,'db.sqlite'),origin,secureCookie:false,trustedProxy:'10.20.30.2',adminPasswordHash:`${salt.toString('hex')}:${scryptSync(password,salt,64).toString('hex')}`});
+ try {
+   const login=(remoteAddress:string,forwarded:string,password:string)=>app.inject({method:'POST',url:'/api/admin/login',remoteAddress,headers:{origin,'x-forwarded-for':forwarded},payload:{password}});
+   for(let i=0;i<5;i++)expect((await login('10.20.30.2','198.51.100.1','bad')).statusCode).toBe(401);
+   expect((await login('10.20.30.2','198.51.100.1',password)).statusCode).toBe(429);
+   const good=await login('10.20.30.2','198.51.100.2',password);expect(good.statusCode).toBe(200);
+   for(let i=0;i<5;i++)expect((await login('10.20.30.3',`203.0.113.${i+1}`,'bad')).statusCode).toBe(401);
+   expect((await login('10.20.30.3','203.0.113.99',password)).statusCode).toBe(429);
+   const cookie=(good.headers['set-cookie'] as string).split(';')[0];
+   const result=await app.inject({method:'PUT',url:'/api/admin/config',headers:{origin,cookie},payload:{palette:PALETTE,title:'Titre',description:'é'.repeat(4000),participationTerms:'😀'.repeat(10000)}});
+   expect(result.statusCode).toBe(200);
+ } finally {await app.close();rmSync(dir,{recursive:true,force:true});}
+},15000);

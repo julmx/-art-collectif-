@@ -13,6 +13,9 @@ services:
       APP_ORIGIN: https://${DOMAIN:?DOMAIN required}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH required}
       CODE_REVISION: ${CODE_REVISION:?CODE_REVISION required}
+      TRUSTED_PROXY: 172.29.250.2
+    networks:
+      - art_internal
     volumes:
       - art_data:/data
     healthcheck:
@@ -22,6 +25,9 @@ services:
       retries: 3
     mem_limit: 1500m
   web:
+    networks:
+      art_internal:
+        ipv4_address: 172.29.250.2
     build:
       context: .
       target: web
@@ -47,3 +53,9 @@ volumes:
   art_data:
   caddy_data:
   caddy_config:
+
+networks:
+  art_internal:
+    ipam:
+      config:
+        - subnet: 172.29.250.0/24

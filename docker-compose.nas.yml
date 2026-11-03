@@ -9,6 +9,9 @@ services:
       APP_ORIGIN: https://${DOMAIN:?DOMAIN required}:8443
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH required}
       CODE_REVISION: ${CODE_REVISION:?CODE_REVISION required}
+      TRUSTED_PROXY: 172.29.250.2
+    networks:
+      - art_internal
     volumes:
       - nas_art_data:/data
     healthcheck:
@@ -17,6 +20,9 @@ services:
       timeout: 5s
       retries: 3
   web:
+    networks:
+      art_internal:
+        ipv4_address: 172.29.250.2
     build:
       context: .
       target: web
@@ -36,3 +42,9 @@ volumes:
   nas_art_data:
   nas_caddy_data:
   nas_caddy_config:
+
+networks:
+  art_internal:
+    ipam:
+      config:
+        - subnet: 172.29.250.0/24
