@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { SIZES, WIDTH, HEIGHT, paintBrush, applyCells, brushMask, type Cell } from '../../../shared/raster';
+import { SIZES, WIDTH, HEIGHT, DRAW_PART_POINTS, DRAW_PART_WORK, estimateBrushWork, paintBrush, applyCells, type Cell } from '../../../shared/raster';
 import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 import { PALETTE } from '../../../shared/palette';
 
@@ -8,7 +8,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 function validate(input: unknown): { command?: DrawCommand; code?: string; opId: string } {
   const v = input as Record<string, unknown> | null;
   const opId = typeof v?.opId === 'string' && uuid.test(v.opId) ? v.opId : '';
-  if (!v || typeof v !== 'object' || Array.isArray(v) || !opId || typeof v.strokeId !== 'string' || !uuid.test(v.strokeId) || Object.keys(v).sort().join(',') !== 'colorId,final,opId,partIndex,points,size,strokeId,tool' || !Number.isSafeInteger(v.partIndex) || (v.partIndex as number) < 0 || typeof v.final !== 'boolean' || (v.tool !== 'pixel' && v.tool !== 'brush') || !Array.isArray(v.points) || v.points.length > 64 || (!v.points.length && !v.final) || Buffer.byteLength(JSON.stringify(v)) > 16384) return { opId, code:'INVALID_MESSAGE' };
+  if (!v || typeof v !== 'object' || Array.isArray(v) || !opId || typeof v.strokeId !== 'string' || !uuid.test(v.strokeId) || Object.keys(v).sort().join(',') !== 'colorId,final,opId,partIndex,points,size,strokeId,tool' || !Number.isSafeInteger(v.partIndex) || (v.partIndex as number) < 0 || typeof v.final !== 'boolean' || (v.tool !== 'pixel' && v.tool !== 'brush') || !Array.isArray(v.points) || v.points.length > DRAW_PART_POINTS || (!v.points.length && !v.final) || Buffer.byteLength(JSON.stringify(v)) > 16384) return { opId, code:'INVALID_MESSAGE' };
   if (typeof v.colorId !== 'number' || typeof v.size !== 'number' || v.points.some(p => !Array.isArray(p) || p.length !== 2 || typeof p[0] !== 'number' || typeof p[1] !== 'number')) return {opId,code:'INVALID_MESSAGE'};
   return {opId,command: {opId,strokeId:v.strokeId as string,partIndex:v.partIndex as number,final:v.final,tool:v.tool,colorId:v.colorId as number,size:v.size as number,points:v.points as DrawCommand['points']}};
 }
@@ -121,10 +121,7 @@ export class Store {
     if (!Number.isInteger(c.size) || !SIZES.includes(c.size as typeof SIZES[number]) || (c.tool==='pixel' && c.size!==1)) return reject('INVALID_SIZE');
     if (c.points.some(([x,y])=>!Number.isInteger(x)||!Number.isInteger(y)||x<0||x>=WIDTH||y<0||y>=HEIGHT)) return reject('INVALID_COORDINATES');
     // Bound worst-case raster work before committing. Long inputs must be split.
-    const maskSize = brushMask(c.size).length;
-    let work = c.points.length ? maskSize : 0;
-    for (let i=1;i<c.points.length;i++) work += (1 + Math.max(Math.abs(c.points[i][0]-c.points[i-1][0]),Math.abs(c.points[i][1]-c.points[i-1][1]))) * maskSize;
-    if (work > 400_000) return reject('COST_LIMIT_EXCEEDED');
+    if (estimateBrushWork(c.points,c.size) > DRAW_PART_WORK) return reject('COST_LIMIT_EXCEEDED');
     const prior = this.db.prepare('SELECT part_index,final,tool,color_id,size,points_json FROM draw_events WHERE participant_id=? AND stroke_id=? ORDER BY part_index DESC LIMIT 1').get(participantId,c.strokeId) as {part_index:number;final:number;tool:string;color_id:number;size:number;points_json:string}|undefined;
     if (!prior && (c.partIndex !== 0 || c.points.length === 0)) return reject('PART_OUT_OF_ORDER');
     if (prior) {
