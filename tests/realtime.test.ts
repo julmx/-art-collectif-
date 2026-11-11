@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { io as client, type Socket } from 'socket.io-client';
 import { createApp } from '../server/src/app';
+import {applyCells, drawPartLength, paintBrush, WIDTH, HEIGHT, type Point} from '../shared/raster';
 
 it('synchronise deux clients et ne rediffuse pas une retransmission', async () => {
   const dir=mkdtempSync(join(tmpdir(),'art-socket-'));
@@ -27,6 +28,24 @@ it('synchronise deux clients et ne rediffuse pas une retransmission', async () =
     const expensive={...command,opId:randomUUID(),strokeId:randomUUID(),tool:'brush',size:21,points:Array.from({length:64},(_,i)=>i%2?[719,479]:[0,0])};
     const refusal=await a.emitWithAck('draw:submit',expensive);expect(refusal).toMatchObject({accepted:false,code:'COST_LIMIT_EXCEEDED'});
     expect(store.db.prepare('SELECT count(*) AS n FROM draw_events').get()?.n).toBe(1);
+
+    const points: Point[] = [[0,10],[719,10],[0,10],[719,10]];
+    const pending = [...points];
+    const strokeId = randomUUID();
+    let partIndex = 0;
+    while (pending.length) {
+      const part = pending.splice(0, drawPartLength(pending, 21));
+      const final = pending.length === 0;
+      if (!final) pending.unshift(part.at(-1)!);
+      const ack = await a.emitWithAck('draw:submit', {...command, opId:randomUUID(), strokeId, partIndex:partIndex++, tool:'brush', size:21, points:part, final});
+      expect(ack).toMatchObject({accepted:true});
+    }
+    expect(partIndex).toBe(3);
+    const expected = new Uint8Array(WIDTH * HEIGHT);
+    applyCells(expected, paintBrush([[4,5]], 1, 1));
+    applyCells(expected, paintBrush(points, 21, 1));
+    expect(store.grid).toEqual(expected);
+    expect(store.replay(store.seq, 'moderated', store.revision())).toEqual(expected);
 
   } finally {a?.disconnect();b?.disconnect();await app.close();rmSync(dir,{recursive:true,force:true});}
 },15000);

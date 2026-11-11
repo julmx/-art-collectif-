@@ -19,7 +19,10 @@ export class CollaborationClient {
   private status = 'draft';
   private palette: string[] = [];
   private undoing = false;
-  constructor(private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void) {}
+  constructor(
+    private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void,
+    private rejected?: (command: DrawCommand, code: string) => void,
+  ) {}
   async connect() {
     const response = await fetch('/api/session',{method:'POST',credentials:'same-origin'});
     if (!response.ok) throw new Error('Session indisponible');
@@ -70,7 +73,10 @@ export class CollaborationClient {
       if (error) { p.sent=false; if (this.connected) setTimeout(()=>this.flush(),1000); return; }
       if (result.accepted) { p.seq=result.seq; if (p.seq<=this.seq) this.pending=this.pending.filter(item=>item!==p); }
       else if (result.code === 'STORAGE_UNAVAILABLE' || result.code === 'RATE_LIMITED') { p.sent=false; setTimeout(()=>this.flush(),1000); return; }
-      else this.pending=this.pending.filter(item=>item!==p);
+      else {
+        this.pending=this.pending.filter(item=>item.command.strokeId!==p.command.strokeId || item.seq!==undefined);
+        this.rejected?.(p.command,result.code);
+      }
       this.emit(); this.flush();
     });
   }

@@ -1,4 +1,4 @@
-import { WIDTH, HEIGHT, SIZES, paintBrush, applyCells, type Point } from '../../shared/raster';
+import { WIDTH, HEIGHT, SIZES, DRAW_PART_POINTS, drawPartLength, paintBrush, applyCells, type Point } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
 import './style.css';
 import { CollaborationClient } from './realtime/client';
@@ -15,12 +15,38 @@ const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!, viewport =
 const ctx = canvas.getContext('2d')!; let grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
 let available = false;
 let colors: readonly string[] = PALETTE; let base: Uint8ClampedArray | null = null; let previousStatus='';
-const client = new CollaborationClient((display, canDraw, status, paletteColors, reset) => { if (paletteColors.length === 24 && paletteColors.join() !== colors.join()) { colors = paletteColors; updatePalette(); } if (status==='open' && previousStatus!=='open') refreshProject(); previousStatus=status; if ((!canDraw || reset) && stroke) { stroke=null; drawingId=null; last=null; } grid = display; if (stroke && stroke.points.length) applyCells(grid,paintBrush(stroke.points,stroke.size,stroke.color)); available = canDraw; document.querySelector<HTMLButtonElement>('#undo')!.disabled = !canDraw || !client.canUndo(); const label = document.querySelector<HTMLElement>('.status')!; label.textContent = status === 'open' && canDraw ? '● Connecté · dessin ouvert' : status === 'disconnected' ? '● Déconnecté · dessin suspendu' : status === 'banned' ? '● Participation suspendue · consultation disponible' : `● Projet : ${status}`; render(); });
+const actionStatus = document.querySelector<HTMLElement>('#undo-status')!;
+const client = new CollaborationClient((display, canDraw, status, paletteColors, reset) => { if (paletteColors.length === 24 && paletteColors.join() !== colors.join()) { colors = paletteColors; updatePalette(); } if (status==='open' && previousStatus!=='open') refreshProject(); previousStatus=status; if ((!canDraw || reset) && stroke) { stroke=null; drawingId=null; last=null; } grid = display; if (stroke && stroke.points.length) applyCells(grid,paintBrush(stroke.points,stroke.size,stroke.color)); available = canDraw; document.querySelector<HTMLButtonElement>('#undo')!.disabled = !canDraw || !client.canUndo(); const label = document.querySelector<HTMLElement>('.status')!; label.textContent = status === 'open' && canDraw ? '● Connecté · dessin ouvert' : status === 'disconnected' ? '● Déconnecté · dessin suspendu' : status === 'banned' ? '● Participation suspendue · consultation disponible' : `● Projet : ${status}`; render(); }, (command) => {
+  if (stroke?.id === command.strokeId) {
+    stroke = null;
+    drawingId = null;
+    last = null;
+  }
+  actionStatus.textContent = 'Une partie du tracé a été refusée. Les parties déjà acceptées sont conservées.';
+});
 client.connect().catch(() => { document.querySelector('.status')!.textContent = '● Connexion indisponible'; });
 let tool: 'brush' | 'pan' = 'brush', color = 1, size = 5, zoom = 1, offsetX = 0, offsetY = 0;
 let last: Point | null = null, drawingId: number | null = null, restartId:number|null = null;
 let stroke: {id:string; part:number; points:Point[]; lastSent:Point|null; tool:'brush'; color:number; size:number} | null = null;
-function flushStroke(final = false) { if (!stroke) return; const current = stroke; if (!current.points.length && !final) return; const points = current.points.splice(0,64); const isFinal = final && current.points.length === 0; const command: DrawCommand = {opId:crypto.randomUUID(),strokeId:current.id,partIndex:current.part++,final:isFinal,tool:current.tool,colorId:current.color,size:current.size,points}; if (!client.submit(command)) { stroke = null; return; } if (points.length) current.lastSent = points[points.length-1]; if (isFinal) stroke = null; else if (!current.points.length && current.lastSent) current.points.push(current.lastSent); if (final && stroke) flushStroke(true); }
+function flushStroke(final = false) {
+  while (stroke && (stroke.points.length || final)) {
+    const current = stroke;
+    const points = current.points.splice(0, drawPartLength(current.points, current.size));
+    const isFinal = final && current.points.length === 0;
+    const command: DrawCommand = {opId:crypto.randomUUID(),strokeId:current.id,partIndex:current.part++,final:isFinal,tool:current.tool,colorId:current.color,size:current.size,points};
+    if (isFinal) stroke = null;
+    else if (points.length) {
+      current.lastSent = points[points.length - 1];
+      current.points.unshift(current.lastSent);
+    }
+    if (!client.submit(command)) {
+      stroke = null;
+      actionStatus.textContent = 'Le tracé a été interrompu. Les parties déjà acceptées sont conservées.';
+      return;
+    }
+    if (!final) return;
+  }
+}
 setInterval(() => { if (stroke && stroke.points.length > (stroke.lastSent ? 1 : 0)) flushStroke(); }, 80);
 function finishStroke() { if (stroke) { if (stroke.lastSent && stroke.points.length === 1) stroke.points = []; flushStroke(true); } last=null; drawingId=null; }
 const pointers = new Map<number, {x:number;y:number}>();
@@ -33,7 +59,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach(button => bu
 function render() { const image = ctx.createImageData(WIDTH, HEIGHT); for (let i = 0; i < grid.length; i++) { const c = grid[i], x = i % WIDTH, y = Math.floor(i / WIDTH); const v = ((Math.floor(x / 48) + Math.floor(y / 48)) % 2) ? 239 : 246; const hex = c ? colors[c - 1] : null; image.data[i*4] = hex ? parseInt(hex.slice(1,3),16) : (base?.[i*4] ?? v); image.data[i*4+1] = hex ? parseInt(hex.slice(3,5),16) : (base?.[i*4+1] ?? v); image.data[i*4+2] = hex ? parseInt(hex.slice(5,7),16) : (base?.[i*4+2] ?? v); image.data[i*4+3] = 255; } ctx.putImageData(image,0,0); }
 function transform() { canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`; document.querySelector('#zoom-label')!.textContent = `${Math.round(zoom * 100)} %`; }
 function cell(e: PointerEvent): Point | null { const r = canvas.getBoundingClientRect(); const x = Math.floor((e.clientX-r.left)*WIDTH/r.width), y = Math.floor((e.clientY-r.top)*HEIGHT/r.height); return x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT ? [x,y] : null; }
-function draw(p: Point) { if (!stroke) return; if (last && p[0] === last[0] && p[1] === last[1]) return; stroke.points.push(p); applyCells(grid, paintBrush(last ? [last,p] : [p],stroke.size,stroke.color)); last=p; render(); if (stroke.points.length >= 64) flushStroke(); }
+function draw(p: Point) { if (!stroke) return; if (last && p[0] === last[0] && p[1] === last[1]) return; stroke.points.push(p); applyCells(grid, paintBrush(last ? [last,p] : [p],stroke.size,stroke.color)); last=p; render(); if (stroke.points.length >= DRAW_PART_POINTS) flushStroke(); }
 function startGesture() { restartId=null; const values = [...pointers.values()]; if (values.length < 2) return; const [a,b] = values; gesture = {x:(a.x+b.x)/2,y:(a.y+b.y)/2,distance:Math.hypot(a.x-b.x,a.y-b.y) || 1,zoom,ox:offsetX,oy:offsetY}; finishStroke(); }
 function beginStroke(id:number,p:Point) { drawingId=id; restartId=null; stroke={id:crypto.randomUUID(),part:0,points:[],lastSent:null,tool:'brush',color,size}; draw(p); }
 viewport.addEventListener('pointerdown', e => { e.preventDefault(); viewport.setPointerCapture(e.pointerId); pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (pointers.size >= 2) { startGesture(); return; } if (tool === 'pan') { gesture = {x:e.clientX,y:e.clientY,distance:1,zoom,ox:offsetX,oy:offsetY}; return; } const p = cell(e); if (p && available) beginStroke(e.pointerId,p); });
