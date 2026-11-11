@@ -31,4 +31,19 @@ describe('raster v1', () => {
     expect(validPalette([...PALETTE.slice(0, 23), '#888888'])).toBe(false);
     expect(validPalette([...PALETTE.slice(0, 23), PALETTE[0]])).toBe(false);
   });
+  it('keeps the order of distinct cells when a wide stroke revisits a center', () => {
+    const points = [[0,0],[3,1],[0,0],[3,1]] as const;
+    const expected = new Map<number, readonly [number, number, number]>();
+    for (const [i, point] of points.entries()) {
+      const previous = points[Math.max(0, i - 1)];
+      for (const [cx, cy] of linePoints(previous[0], previous[1], point[0], point[1])) {
+        for (const [dx, dy] of brushMask(21)) {
+          for (const cell of paintPixel(cx + dx, cy + dy, 4)) {
+            expected.set(cell[1] * WIDTH + cell[0], cell);
+          }
+        }
+      }
+    }
+    expect(paintBrush(points, 21, 4)).toEqual([...expected.values()]);
+  });
 });
