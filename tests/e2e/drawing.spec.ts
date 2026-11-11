@@ -7,6 +7,7 @@ test('la toile utilise la place disponible sur ordinateur et tient sur mobile',a
 test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.status')).toContainText('dessin ouvert');
+  await page.locator('#sizes').getByRole('button', {name:'1', exact:true}).click();
   const canvas = page.locator('canvas'); await canvas.scrollIntoViewIfNeeded(); const box = await canvas.boundingBox();
   if (!box) throw new Error('Canvas invisible');
   await canvas.evaluate((c: HTMLCanvasElement) => { (window as unknown as {before:Uint8ClampedArray}).before = c.getContext('2d')!.getImageData(0,0,c.width,c.height).data; });
