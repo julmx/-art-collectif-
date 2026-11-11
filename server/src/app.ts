@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
-import { Server } from 'socket.io';
+import { Server, type Socket } from 'socket.io';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Store } from './database/store';
 import { WIDTH, HEIGHT } from '../../shared/raster';
@@ -9,6 +9,11 @@ import { registerAdmin } from './admin/routes';
 import { dirname, join } from 'node:path';
 import { Snapshots } from './renderer/snapshots';
 import { applyModeration } from './admin/moderation-apply';
+
+const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+const RESYNC_INTERVAL_MS = 1000;
+// Each grid entry has at most two digits and one separator. Allow room for metadata and framing.
+const FULL_STATE_BYTES = WIDTH * HEIGHT * 3 + 2048;
 
 export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean; trustedProxy?:string }) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 16 * 1024, trustProxy: options.trustedProxy || false });
@@ -34,7 +39,24 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   });
   io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); try { store.db.prepare('UPDATE participants SET last_seen_at=? WHERE id=?').run(new Date().toISOString(),participant.id); } catch {return next(new Error('STORAGE_UNAVAILABLE'));} socket.data.participantId = participant.id; next(); });
   function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
-  registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),dbPath:options.dbPath,passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state});
+  function reserveCanvasBytes(socket: Socket, bytes: number): boolean {
+    const queued = Number(socket.data.queuedBytes) + bytes;
+    if (queued > MAX_QUEUED_BYTES) {
+      socket.disconnect(true);
+      return false;
+    }
+    socket.data.queuedBytes = queued;
+    return true;
+  }
+  function sendState(socket: Socket) {
+    if (reserveCanvasBytes(socket, FULL_STATE_BYTES)) socket.emit('canvas:state',state());
+  }
+  function prepareResetState() {
+    for (const socket of io.sockets.sockets.values()) reserveCanvasBytes(socket, FULL_STATE_BYTES);
+    return state();
+  }
+  const resetCanvas = () => io.emit('canvas:reset',prepareResetState());
+  registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),dbPath:options.dbPath,passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state:prepareResetState});
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
   const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
   // A batch is bounded both by message count and estimated raster work.
@@ -47,8 +69,8 @@ export async function createApp(options: { dbPath: string; origin: string; secur
         const {result,changes:cells}=results[i];batch[i].ack(result);
         if(!result.accepted||result.duplicate)continue;
         if(result.seq%500===0)scheduleSnapshot();
-        if(!cells){io.emit('canvas:reset',state());continue;}
-        for(const peer of io.sockets.sockets.values()){peer.data.queuedBytes=Number(peer.data.queuedBytes || 0)+80+cells.length*16;if(peer.data.queuedBytes>4*1024*1024)peer.disconnect(true);}
+        if(!cells){resetCanvas();continue;}
+        for(const peer of io.sockets.sockets.values()) reserveCanvasBytes(peer, 80 + cells.length * 16);
         io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
       }
     } catch(error){app.log.error(error,'batch reconstruction failed');io.disconnectSockets(true);}
@@ -59,16 +81,35 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   io.on('connection', socket => {
     socket.data.queuedBytes=0;socket.conn.on('drain',()=>{socket.data.queuedBytes=0;});
     socket.emit('participant:restriction',{banned:store.isBanned(socket.data.participantId as string)});
-    socket.emit('canvas:state',state());
-    socket.on('disconnect', () => { if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string); });
-    socket.on('canvas:resync', () => { if (store.healthy) socket.emit('canvas:state',state()); else socket.disconnect(true); });
+    sendState(socket);
+    let lastResyncAt = -Infinity;
+    let resyncTimer: NodeJS.Timeout | undefined;
+    const resync = () => {
+      resyncTimer = undefined;
+      if (!store.healthy) {
+        socket.disconnect(true);
+        return;
+      }
+      lastResyncAt = performance.now();
+      sendState(socket);
+    };
+    socket.on('disconnect', () => {
+      clearTimeout(resyncTimer);
+      if (![...io.sockets.sockets.values()].some(s => s.data.participantId === socket.data.participantId)) buckets.delete(socket.data.participantId as string);
+    });
+    socket.on('canvas:resync', () => {
+      if (resyncTimer !== undefined) return;
+      const wait = RESYNC_INTERVAL_MS - (performance.now() - lastResyncAt);
+      if (wait > 0) resyncTimer = setTimeout(resync, Math.ceil(wait));
+      else resync();
+    });
     socket.on('draw:undo', async (ack:unknown) => {
       if (typeof ack !== 'function') return;
       const reply=ack as (result:unknown)=>void, participantId=socket.data.participantId as string;
       if (!store.healthy || store.isBanned(participantId) || (store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') { reply({ok:false,code:'UNAVAILABLE'}); return; }
       const row=store.db.prepare(`SELECT e.stroke_id FROM draw_events e WHERE e.participant_id=? AND e.final=1 AND COALESCE((SELECT a.action FROM moderation_actions a WHERE a.participant_id=e.participant_id AND a.stroke_id=e.stroke_id ORDER BY a.revision DESC LIMIT 1),'restore') != 'hide' ORDER BY e.seq DESC LIMIT 1`).get(participantId) as {stroke_id:string}|undefined;
       if (!row) { reply({ok:false,code:'EMPTY'}); return; }
-      try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); io.emit('canvas:reset',state()); reply({ok:true}); }
+      try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); resetCanvas(); reply({ok:true}); }
       catch(error) { app.log.error(error,'undo failed'); if(!store.healthy)io.disconnectSockets(true); reply({ok:false,code:'UNAVAILABLE'}); }
     });
     socket.on('draw:submit',(input:unknown,ack:unknown) => {
