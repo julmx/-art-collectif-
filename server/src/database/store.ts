@@ -4,6 +4,7 @@ import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 import { PALETTE } from '../../../shared/palette';
 
 type EventRow = { seq: number; participant_id: string; command_json: string; created_at: string };
+type StrokeDecision = {participantId:string;strokeId:string;action:'hide'|'restore'};
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function validate(input: unknown): { command?: DrawCommand; code?: string; opId: string } {
   const v = input as Record<string, unknown> | null;
@@ -66,17 +67,23 @@ export class Store {
     if(!['ban','unban'].includes(action)||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
     this.db.prepare('INSERT INTO participant_sanctions(participant_id,action,reason,created_at) VALUES(?,?,?,?)').run(participantId,action,reason.trim(),new Date().toISOString());
   }
-  replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}, overrides?:{participantId:string;strokeId:string;action:'hide'|'restore'}[]): Uint8Array {
-    const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT), hidden = new Set<string>();
-    if (mode === 'moderated') {
-      const decisions=this.db.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(revision) as {participant_id:string;stroke_id:string;action:string}[];
-      for (const d of decisions) { const key=JSON.stringify([d.participant_id,d.stroke_id]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
-      for(const d of overrides??[]){const key=JSON.stringify([d.participantId,d.strokeId]);if(d.action==='hide')hidden.add(key);else hidden.delete(key);}
-    }
-    for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq>? AND seq<=? ORDER BY seq').iterate(snapshot?.seq ?? 0,target) as IterableIterator<EventRow>) {
+  hiddenStrokes(revision: number, overrides: readonly StrokeDecision[] = []): Set<string> {
+    const hidden = new Set<string>();
+    const decisions=this.db.prepare('SELECT participant_id,stroke_id,action FROM moderation_actions WHERE revision<=? ORDER BY revision').all(revision) as {participant_id:string;stroke_id:string;action:string}[];
+    for (const d of decisions) { const key=JSON.stringify([d.participant_id,d.stroke_id]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
+    for (const d of overrides) { const key=JSON.stringify([d.participantId,d.strokeId]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
+    return hidden;
+  }
+  replayInto(grid: Uint8Array, after: number, target: number, hidden: ReadonlySet<string>): void {
+    for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq>? AND seq<=? ORDER BY seq').iterate(after,target) as IterableIterator<EventRow>) {
       const c=JSON.parse(row.command_json) as DrawCommand;
       if (!hidden.has(JSON.stringify([row.participant_id,c.strokeId]))) applyCells(grid,paintBrush(c.points,c.size,c.colorId));
     }
+  }
+  replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}, overrides?:StrokeDecision[]): Uint8Array {
+    const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT);
+    const hidden = mode === 'moderated' ? this.hiddenStrokes(revision, overrides) : new Set<string>();
+    this.replayInto(grid, snapshot?.seq ?? 0, target, hidden);
     return grid;
   }
   rebuild() { this.seq = Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq); this.grid=this.replay(this.seq,'moderated',this.revision()); }
