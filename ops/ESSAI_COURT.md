@@ -39,7 +39,15 @@ Le 22 novembre 2026, le même scénario de 60 secondes a été exécuté dans l�
 
 ## Diagnostic des refus sur le NAS
 
-L’essai Synology de 60 secondes a envoyé 29 912 commandes. Le générateur a reçu 17 573 acquittements et déclaré 12 339 échecs, dont 12 306 `RATE_LIMITED`. Le p95 d’acquittement était de 8 206 ms. Le journal contenait 17 689 événements. La sauvegarde SQLite, la convergence et le rejeu ont réussi. Le scénario doit être rejoué en durée courte avec l’instrumentation ci-dessous avant de passer aux 30 minutes.
+L’essai Synology de 60 secondes a envoyé 29 912 commandes. Le générateur a reçu 17 573 acquittements et déclaré 12 339 échecs, dont 12 306 `RATE_LIMITED`. Le p95 d’acquittement était de 8 206 ms. Le journal contenait 17 689 événements. La sauvegarde SQLite, la convergence et le rejeu ont réussi.
 
 - `drawDiagnostics` compte les refus enregistrés par le serveur pour chaque tentative. `participant` indique que la cadence individuelle est dépassée et `queue` que la file de dessin est pleine. Le rapport indique aussi la cause du premier refus et la profondeur maximale de cette file.
 - `rejectedEventsPersisted` et `pendingEventsPersisted` comptent les identifiants que le générateur a classés en échec ou laissés en attente et qu’il retrouve dans le journal à la séquence capturée. `eventCountDiscrepancy` donne l’écart restant après ce rapprochement. `duplicateAcks` compte les acquittements signalant qu’une opération avait déjà été enregistrée.
+
+L’essai Synology suivant, sur `e66795f`, a rencontré son premier refus lorsque la file serveur a atteint 1 000 commandes. Le serveur a compté 30 448 tentatives refusées pour file pleine et 22 223 pour cadence individuelle dépassée. Sur 29 990 commandes envoyées, 19 047 ont été acquittées et 33 autres ont été retrouvées dans SQLite, ce qui explique l’écart avec les 19 080 événements du journal. Le p95 d’acquittement était de 7 601 ms. La sauvegarde, la convergence et le rejeu ont réussi.
+
+### Temps de traitement des lots
+
+`drawDiagnostics.batchTimings` indique le nombre de lots et de commandes traités. Chaque phase donne le temps cumulé, le p95 et le maximum par lot, en millisecondes. Le rapport distingue la sélection du lot, l’ouverture de la transaction SQLite, les insertions, le commit durable, la rastérisation avec mise à jour de la grille et la diffusion synchrone. Cette dernière mesure couvre la préparation et l’émission Socket.IO côté serveur. La réception par les clients est mesurée par le scénario de charge.
+
+`storeOtherMs` inclut notamment les lectures SQLite, la validation et la sérialisation. `otherMs` inclut notamment l’envoi des acquittements et la planification des snapshots. `totalMs` mesure le traitement synchrone du lot. Les temps d’attente en file et entre lots ne sont pas inclus. Comparer les cumuls pour identifier les phases qui mobilisent le plus de temps et le p95 par lot pour repérer des pointes.

@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import { ServerResponse } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { Store } from './database/store';
+import { Store, type DrawWriteTimings } from './database/store';
 import { WIDTH, HEIGHT, SIZES, DRAW_PART_POINTS, DRAW_PART_WORK, estimateBrushWork, type Point } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
 import { registerAdmin } from './admin/routes';
@@ -21,9 +21,19 @@ const FULL_STATE_BYTES = WIDTH * HEIGHT * 3 + 2048;
 
 type DrawLimitReason = 'participant' | 'queue';
 
+type DrawBatchTimings = DrawWriteTimings & {
+  commands: number;
+  totalMs: number;
+  selectionMs: number;
+  storeOtherMs: number;
+  broadcastMs: number;
+  otherMs: number;
+};
+
 type DrawDiagnostics = {
   onQueueDepth: (depth: number) => void;
   onRateLimit: (reason: DrawLimitReason, queueDepth: number) => void;
+  onBatch: (timings: DrawBatchTimings) => void;
 };
 
 export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean; trustedProxy?:string; drawDiagnostics?:DrawDiagnostics }) {
@@ -90,19 +100,49 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     }
     return Math.min(estimateBrushWork(command.points as Point[], command.size), DRAW_PART_WORK + 1);
   };
+  const onBatch = options.drawDiagnostics?.onBatch;
   const flush=()=>{
-    flushTimer=undefined;const batch:Queued[]=[];let work=0;while(queue.length&&batch.length<100){const next=cost(queue[0].input);if(batch.length&&work+next>DRAW_PART_WORK)break;batch.push(queue.shift()!);work+=next;}if(!batch.length)return;
+    flushTimer=undefined;
+    const started = onBatch ? performance.now() : 0;
+    const batch:Queued[]=[];
+    let work=0;
+    while(queue.length&&batch.length<100){const next=cost(queue[0].input);if(batch.length&&work+next>DRAW_PART_WORK)break;batch.push(queue.shift()!);work+=next;}
+    if(!batch.length)return;
+    const storeStarted = onBatch ? performance.now() : 0;
+    const timings = onBatch ? {sqliteBeginMs:0,sqliteInsertMs:0,sqliteCommitMs:0,rasterMs:0} : undefined;
+    let storeEnded = 0, broadcastMs = 0;
     try {
-      const results=store.submitBatch(batch),revision=store.revision();
+      const results=store.submitBatch(batch,timings);
+      if (onBatch) storeEnded = performance.now();
+      const revision=store.revision();
       for(let i=0;i<batch.length;i++){
         const {result,changes:cells}=results[i];batch[i].ack(result);
         if(!result.accepted||result.duplicate)continue;
         if(result.seq%500===0)scheduleSnapshot();
-        if(!cells){resetCanvas();continue;}
-        for(const peer of io.sockets.sockets.values()) reserveCanvasBytes(peer, 80 + cells.length * 16);
-        io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
+        const broadcastStarted = onBatch ? performance.now() : 0;
+        if (!cells) {
+          resetCanvas();
+        } else {
+          for(const peer of io.sockets.sockets.values()) reserveCanvasBytes(peer, 80 + cells.length * 16);
+          io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
+        }
+        if (onBatch) broadcastMs += performance.now() - broadcastStarted;
       }
-    } catch(error){app.log.error(error,'batch reconstruction failed');io.disconnectSockets(true);}
+    } catch(error){
+      if (onBatch && !storeEnded) storeEnded = performance.now();
+      app.log.error(error,'batch reconstruction failed');
+      io.disconnectSockets(true);
+    }
+    if (onBatch && timings) {
+      const totalMs = performance.now() - started;
+      const selectionMs = storeStarted - started, storeMs = storeEnded - storeStarted;
+      const writesMs = timings.sqliteBeginMs + timings.sqliteInsertMs + timings.sqliteCommitMs;
+      onBatch({
+        ...timings, commands:batch.length, totalMs, selectionMs, broadcastMs,
+        storeOtherMs:Math.max(0,storeMs-writesMs-timings.rasterMs),
+        otherMs:Math.max(0,totalMs-selectionMs-storeMs-broadcastMs),
+      });
+    }
     if(queue.length)flushTimer=setTimeout(flush,0);
   };
   // Per-participant token bucket: burst 40, sustained 20 commands per second.

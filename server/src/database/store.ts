@@ -5,6 +5,13 @@ import { PALETTE } from '../../../shared/palette';
 
 type EventRow = { seq: number; participant_id: string; command_json: string; created_at: string };
 type StrokeDecision = {participantId:string;strokeId:string;action:'hide'|'restore'};
+export type DrawWriteTimings = {
+  sqliteBeginMs: number;
+  sqliteInsertMs: number;
+  sqliteCommitMs: number;
+  rasterMs: number;
+};
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function validate(input: unknown): { command?: DrawCommand; code?: string; opId: string } {
   const v = input as Record<string, unknown> | null;
@@ -115,7 +122,7 @@ export class Store {
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     this.grid=grid; return revision;
   }
-  submit(participantId: string, input: unknown): DrawResult {
+  submit(participantId: string, input: unknown, timings?: DrawWriteTimings): DrawResult {
     const parsed = validate(input); if (!parsed.command) return {opId:parsed.opId,accepted:false,code:parsed.code!};
     const c = parsed.command, canonical = JSON.stringify(c);
     const duplicate = this.db.prepare('SELECT seq, command_json FROM draw_events WHERE participant_id=? AND op_id=?').get(participantId,c.opId) as {seq:number;command_json:string}|undefined;
@@ -142,21 +149,39 @@ export class Store {
       if (!this.batching) this.db.exec('BEGIN IMMEDIATE');
       const last = this.db.prepare('SELECT created_at FROM draw_events ORDER BY seq DESC LIMIT 1').get() as {created_at:string}|undefined;
       const now = new Date().toISOString(), created = last && last.created_at > now ? last.created_at : now;
-      const result = this.db.prepare('INSERT INTO draw_events(op_id,participant_id,stroke_id,part_index,final,tool,color_id,size,points_json,command_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(c.opId,participantId,c.strokeId,c.partIndex,Number(c.final),c.tool,c.colorId,c.size,JSON.stringify(c.points),canonical,created);
+      const pointsJson = JSON.stringify(c.points);
+      const insertStarted = timings ? performance.now() : 0;
+      const result = this.db.prepare('INSERT INTO draw_events(op_id,participant_id,stroke_id,part_index,final,tool,color_id,size,points_json,command_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(c.opId,participantId,c.strokeId,c.partIndex,Number(c.final),c.tool,c.colorId,c.size,pointsJson,canonical,created);
+      if (timings) timings.sqliteInsertMs += performance.now() - insertStarted;
       seq = Number(result.lastInsertRowid); if (!this.batching) this.db.exec('COMMIT');
     } catch (error) { if (this.batching) throw error; try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }
     // Never report a storage rejection after a successful commit. If reconstruction
     // also fails, propagate the error so the service stops serving stale state.
     this.lastChanges=null;
-    try { const cells=this.hidden(participantId,c.strokeId,this.revision()) ? [] : paintBrush(c.points,c.size,c.colorId); applyCells(this.grid,cells); this.lastChanges=cells; this.seq = seq; } catch { this.healthy=false; this.rebuild(); this.healthy=true; }
+    try {
+      const isHidden = this.hidden(participantId,c.strokeId,this.revision());
+      const rasterStarted = timings ? performance.now() : 0;
+      const cells = isHidden ? [] : paintBrush(c.points,c.size,c.colorId);
+      applyCells(this.grid,cells);
+      if (timings) timings.rasterMs += performance.now() - rasterStarted;
+      this.lastChanges = cells;
+      this.seq = seq;
+    } catch { this.healthy=false; this.rebuild(); this.healthy=true; }
     return {opId:c.opId,accepted:true,seq,duplicate:false};
   }
-  submitBatch(items: {participantId:string;input:unknown}[]): {result:DrawResult;changes:Cell[]|null}[] {
+  submitBatch(items: {participantId:string;input:unknown}[], timings?: DrawWriteTimings): {result:DrawResult;changes:Cell[]|null}[] {
     if (!items.length) return [];
-    this.db.exec('BEGIN IMMEDIATE'); this.batching=true;
+    const beginStarted = timings ? performance.now() : 0;
+    this.db.exec('BEGIN IMMEDIATE');
+    if (timings) timings.sqliteBeginMs += performance.now() - beginStarted;
+    this.batching=true;
     try {
-      const results=items.map(item=>{const result=this.submit(item.participantId,item.input);return {result,changes:result.accepted&&!result.duplicate?this.lastChanges:null};});
-      this.db.exec('COMMIT'); this.batching=false; return results;
+      const results=items.map(item=>{const result=this.submit(item.participantId,item.input,timings);return {result,changes:result.accepted&&!result.duplicate?this.lastChanges:null};});
+      const commitStarted = timings ? performance.now() : 0;
+      this.db.exec('COMMIT');
+      if (timings) timings.sqliteCommitMs += performance.now() - commitStarted;
+      this.batching=false;
+      return results;
     } catch {
       this.healthy=false; this.batching=false;
       try { this.db.exec('ROLLBACK'); } catch { throw new Error('Unable to roll back failed draw batch'); }
