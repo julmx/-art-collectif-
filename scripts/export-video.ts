@@ -19,8 +19,13 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
     const project=copy.prepare('SELECT * FROM project WHERE id=1').get() as {base_image_path:string|null;base_image_checksum:string|null;palette_json:string;started_at:string|null;closed_at:string|null;moderation_revision:number};
     if(!project.base_image_path) throw new Error('Fond absent'); if(args.mode==='chronological'&&!project.started_at) throw new Error('Export chronologique impossible avant ouverture');
     const base=await readFile(project.base_image_path); if(createHash('sha256').update(base).digest('hex')!==project.base_image_checksum) throw new Error('Fond incompatible avec la capture');
-    const max=Number((copy.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM draw_events').get() as {n:number}).n), end=args.endSeq ?? max;
+    const max=Number((copy.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM draw_events').get() as {n:number}).n);
+    let end=args.endSeq ?? max;
     if(!Number.isSafeInteger(end)||end<0||end>max) throw new Error('Séquence de fin invalide');
+    if (args.mode === 'chronological' && args.captureAt) {
+      const cutoff = new Date(args.captureAt).toISOString();
+      end = Number(copy.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events WHERE seq<=? AND created_at<=?').get(end, cutoff)!.seq);
+    }
     if(args.metadata)await writeFile(args.metadata,JSON.stringify({captureCompletedAt:new Date().toISOString(),sequence:end,moderationRevision:project.moderation_revision}),{mode:0o600});
     // Materialise only the latest moderation decisions in a disk-backed TEMP table.
     copy.exec('PRAGMA temp_store=FILE; CREATE TEMP TABLE hidden(participant_id TEXT,stroke_id TEXT,PRIMARY KEY(participant_id,stroke_id)) WITHOUT ROWID');
@@ -28,7 +33,7 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
     type Row={seq:number;command_json:string;created_at:string;hidden:number};
     const events=copy.prepare('SELECT e.seq,e.command_json,e.created_at,(h.participant_id IS NOT NULL) AS hidden FROM draw_events e LEFT JOIN hidden h ON h.participant_id=e.participant_id AND h.stroke_id=e.stroke_id WHERE e.seq<=? ORDER BY e.seq').iterate(end) as IterableIterator<Row>;
     let next=events.next();const last=copy.prepare('SELECT created_at FROM draw_events WHERE seq<=? ORDER BY seq DESC LIMIT 1').get(end) as {created_at:string}|undefined;
-    const palette=JSON.parse(project.palette_json) as string[], grid=new Uint8Array(WIDTH*HEIGHT), frames=Math.max(2,Math.round(args.duration*args.fps)), start=project.started_at ? Date.parse(project.started_at) : 0, capture=args.captureAt ? Date.parse(args.captureAt) : Date.now(), endTime=args.endSeq !== undefined ? (last ? Date.parse(last.created_at) : start) : (project.closed_at ? Date.parse(project.closed_at) : capture);
+    const palette=JSON.parse(project.palette_json) as string[], grid=new Uint8Array(WIDTH*HEIGHT), frames=Math.max(2,Math.round(args.duration*args.fps)), start=project.started_at ? Date.parse(project.started_at) : 0, capture=args.captureAt ? Date.parse(args.captureAt) : Date.now(), endTime=args.endSeq !== undefined ? (last ? Date.parse(last.created_at) : start) : (project.closed_at ? Math.min(Date.parse(project.closed_at), capture) : capture);
     const ffmpeg=spawn('ffmpeg',['-v','error','-y','-f','rawvideo','-pix_fmt','rgb24','-s',`${WIDTH}x${HEIGHT}`,'-r',String(args.fps),'-i','pipe:0','-vf',`scale=${WIDTH*args.scale}:${HEIGHT*args.scale}:flags=neighbor`,'-c:v','libx264','-threads','1','-pix_fmt','yuv420p',resolve(args.output)],{stdio:['pipe','ignore','pipe']});
     terminateEncoder=()=>{ffmpeg.stdin.destroy();if(ffmpeg.exitCode===null)ffmpeg.kill('SIGTERM');};
     ffmpeg.stdin.on('error',()=>{});

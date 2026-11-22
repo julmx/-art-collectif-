@@ -1,5 +1,5 @@
-import { it,expect } from 'vitest';
-import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import { it,expect,vi } from 'vitest';
+import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -18,3 +18,25 @@ it('inclut le fond initial et applique la modération aux deux rythmes',async()=
  for(const mode of ['activity','chronological'] as const)for(const moderation of ['raw','moderated'] as const){const output=join(dir,`${mode}-${moderation}.mp4`);await exportVideo({database:db,output,mode,moderation,duration:1,fps:2,scale:1,captureAt});const frames=execFileSync('ffmpeg',['-v','error','-i',output,'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],{maxBuffer:4*1024*1024});const index=(40*720+40)*3,size=720*480*3;expect(Math.abs(frames[index]-frames[index+1])).toBeLessThan(10);if(moderation==='raw')expect(frames[size+index]-frames[size+index+1]).toBeGreaterThan(80);else expect(Math.abs(frames[size+index]-frames[size+index+1])).toBeLessThan(10);}
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 },60000);
+
+it('arrête les pixels et la séquence du timelapse à la capture demandée', async () => {
+ const dir=mkdtempSync(join(tmpdir(),'art-video-cutoff-')), database=join(dir,'db.sqlite'), store=new Store(database);
+ try {
+   const base=join(dir,'base.png'), metadata=join(dir,'capture.json'), output=join(dir,'clip.mp4');
+   const image=await sharp({create:{width:720,height:480,channels:3,background:'#808080'}}).png().toBuffer();
+   writeFileSync(base,image);
+   store.db.prepare("UPDATE project SET base_image_path=?,base_image_checksum=?,status='open',started_at=?").run(base,createHash('sha256').update(image).digest('hex'),'2026-01-01T00:00:00.000Z');
+   store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();
+   for (const [x, time] of [[40,'00:01'],[80,'00:03']] as const) {
+     vi.setSystemTime(new Date(`2026-01-01T${time}:00Z`));
+     expect(store.submit('p',{opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'brush',colorId:1,size:21,points:[[x,40]]}).accepted).toBe(true);
+   }
+   vi.useRealTimers();
+   await exportVideo({database,output,metadata,mode:'chronological',moderation:'raw',duration:1,fps:2,scale:1,captureAt:'2026-01-01T00:02:00Z'});
+   expect(JSON.parse(readFileSync(metadata,'utf8')).sequence).toBe(1);
+   const frames=execFileSync('ffmpeg',['-v','error','-i',output,'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],{maxBuffer:4*1024*1024});
+   const redMinusGreen=(x:number)=>{const i=(720*480+40*720+x)*3; return frames[i]-frames[i+1];};
+   expect(redMinusGreen(40)).toBeGreaterThan(80);
+   expect(Math.abs(redMinusGreen(80))).toBeLessThan(10);
+ } finally {vi.useRealTimers();store.close();rmSync(dir,{recursive:true,force:true});}
+},30000);
