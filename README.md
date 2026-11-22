@@ -28,7 +28,7 @@ La recherche examine au maximum les 300 000 commandes les plus récentes et 30 r
 
 ## Déploiement prévu
 
-Le dépôt fournit Docker Compose et Caddy. Créer un fichier `.env` privé, non versionné, contenant `DOMAIN`, `ADMIN_PASSWORD_HASH` et `CODE_REVISION` (SHA exact du code déployé). Faire pointer le domaine vers le VPS et autoriser les ports 80 et 443. `docker compose up -d --build` crée les services et les volumes persistants. Ne pas exposer directement le port du serveur Node. Compose réserve l’adresse `172.29.250.2` à Caddy sur le réseau dédié ; seule cette adresse est reconnue comme proxy. Si ce sous-réseau est déjà utilisé, adapter ensemble le sous-réseau, l’adresse de Caddy et `TRUSTED_PROXY`. Ne jamais faire confiance à tous les proxies. La configuration NAS a été construite et testée localement avec Docker Compose classique ; elle reste à vérifier sur le NAS et la configuration VPS reste à valider en production.
+Le dépôt fournit Docker Compose et Caddy. Créer un fichier `.env` privé, non versionné, contenant `DOMAIN`, `ADMIN_PASSWORD_HASH` et `CODE_REVISION` (SHA exact du code déployé). Faire pointer le domaine vers le VPS et autoriser les ports 80 et 443. `docker compose up -d --build` crée les services et les volumes persistants. Ne pas exposer directement le port du serveur Node. Compose réserve l’adresse `172.29.250.2` à Caddy sur le réseau dédié ; seule cette adresse est reconnue comme proxy. Si ce sous-réseau est déjà utilisé, adapter ensemble le sous-réseau, l’adresse de Caddy et `TRUSTED_PROXY`. Ne jamais faire confiance à tous les proxies. La configuration VPS reste à valider en production. Le NAS de test suit la [procédure dédiée](#essai-sur-un-nas-synology).
 
 Le cookie de participation, aléatoire et HttpOnly, expire après 90 jours ; seule son empreinte est enregistrée. La session d’administration expire après huit heures et disparaît au redémarrage. Le seuil chromatique retenu est un écart d’au moins 40 entre les composantes RGB extrêmes. Les limites provisoires sont 20 commandes/s par session, rafale de 40 et coût estimé maximal de 400 000 cellules par commande ; elles doivent être confirmées par l’essai de charge complet. Aucun quota cumulé artistique n’est appliqué. Les journaux de sécurité et leur rétention restent à définir avant le lancement.
 
@@ -56,7 +56,7 @@ Les fichiers sous `ops/` préparent un transfert SSH/rsync toutes les 30 minutes
 ## État et limites avant lancement
 
 - Un essai local de 30 minutes avec 50 clients a été effectué sur la version `7e8179e` ; le délai p95 dépasse le seuil et des commandes ont été rejetées. La recette conforme sur l’hébergement cible avec sauvegardes et navigateurs réels reste à effectuer : voir [le journal des essais](ops/ESSAI_COURT.md).
-- Le transfert extérieur, les alertes, l’exercice de restauration et le déploiement Compose n’ont pas été vérifiés dans une infrastructure réelle. La disponibilité, l’espace disque et la rétention doivent être surveillés.
+- Le transfert extérieur, les alertes, l’exercice de restauration et le déploiement Compose restent à vérifier sur le VPS. La disponibilité, l’espace disque et la rétention doivent être surveillés.
 - Les essais physiques souris, tactile et stylet, le test pilote et les conditions définitives de participation et de réutilisation artistique restent à réaliser ou finaliser.
 - La couverture automatisée ne démontre pas encore tous les cas de reconnexion, de panne disque, de révision de modération et de relecture vidéo. Ne pas considérer la V1 comme validée tant que les cases pertinentes du cahier des charges ne sont pas exécutées.
 - Les snapshots modérés compatibles accélèrent les reconstructions au démarrage et les exports ; un snapshot absent ou invalide est ignoré au profit du journal.
@@ -64,6 +64,34 @@ Les fichiers sous `ops/` préparent un transfert SSH/rsync toutes les 30 minutes
 Ne jamais ajouter au dépôt secrets, données réelles de participants, sauvegardes ou exports d’exploitation.
 
 ## Essai sur un NAS Synology
+
+### Livrer une version sur le NAS de test
+
+Le projet Synology `artcollectif-test` utilise les services `app` et `web`. Le canevas est stocké dans le volume `artcollectif-test_nas_art_data`.
+
+1. Sur le PC dans WSL, construire les deux images avec [le script de build](ops/build-nas-test). Le script utilise le moteur Docker local et construit à partir du contenu exact du commit `HEAD`.
+
+   ```sh
+   sh ops/build-nas-test /tmp/artcollectif-livraison
+   ```
+
+2. Déposer l’archive sous le nom `Z:\art-collaboratif\a-deployer\artcollectif.tar`. Pour un transfert via Windows, copier d’abord sous un nom temporaire dans `a-deployer`, vérifier la somme SHA-256 de la copie, puis remplacer `artcollectif.tar`. Le dossier contient une seule archive de livraison. Le commit est indiqué dans les deux images.
+3. Dans DSM, le propriétaire du NAS sélectionne la tâche **Deployer Art Collectif** dans **Panneau de configuration → Planificateur de tâches** et clique sur **Exécuter**. Il peut ensuite ouvrir le canevas à son adresse HTTPS habituelle pour vérifier le fond et les traits.
+
+La tâche charge les deux images et vérifie qu’elles viennent du même commit. Elle crée une sauvegarde vérifiée de SQLite et du fond dans `Z:\art-collaboratif\sauvegardes`, puis recrée les conteneurs avec le volume existant. Une sauvegarde invalide interrompt la mise à jour avant la recréation des conteneurs.
+
+### Configurer ou réinstaller la tâche DSM
+
+1. Copier [le script de déploiement](ops/deploy-artcollectif) et [le complément Compose](ops/docker-compose.images.yml) à côté du Compose actif dans `Z:\art-collaboratif\art-collectif-codex-98477dc`. Le `docker-compose.yml` actif définit le réseau, les ports et les volumes. Le complément sélectionne les images chargées.
+2. Dans le **Planificateur de tâches**, créer une **Tâche planifiée → Script défini par l’utilisateur** nommée `Deployer Art Collectif`. Choisir `root` comme utilisateur et décocher **Activé** pour un déclenchement manuel. Dans les paramètres de la tâche, saisir la commande suivante.
+
+   ```sh
+   /bin/sh /volume1/docker/art-collaboratif/art-collectif-codex-98477dc/deploy-artcollectif
+   ```
+
+Pour les livraisons, limiter l’accès en écriture de l’agent à `a-deployer`. Le propriétaire du NAS garde la main sur la tâche DSM, le script qu’elle exécute, les fichiers Compose, `.env` et les sauvegardes.
+
+### Créer un environnement Synology distinct
 
 Le fichier `docker-compose.nas.yml` prépare un environnement de développement séparé, avec des volumes propres et HTTPS local sur le port 8443. Copier le dépôt sur le NAS, créer un fichier privé `.env.nas` avec `DOMAIN` (adresse IP ou nom DNS local du NAS, sans port), `LAN_BIND_IP` (adresse IPv4 locale sur laquelle écouter), `ADMIN_PASSWORD_HASH` et `CODE_REVISION`, puis démarrer depuis le dossier du projet :
 

@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+umask 077
+PATH=/usr/local/bin:/usr/syno/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/packages/ContainerManager/target/usr/bin
+export PATH
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+[ "$#" -eq 0 ] || fail 'Usage : deploy-artcollectif'
+[ "$(id -u)" -eq 0 ] || fail 'Lancer cette tâche en root depuis le Planificateur de tâches DSM.'
+command -v docker >/dev/null || fail 'Docker est introuvable dans l’environnement de la tâche DSM.'
+if docker compose version >/dev/null 2>&1; then
+    compose() { docker compose "$@"; }
+elif command -v docker-compose >/dev/null; then
+    compose() { docker-compose "$@"; }
+else
+    fail 'Docker Compose est introuvable dans l’environnement de la tâche DSM.'
+fi
+
+set -- up -d --no-build
+if compose up --help | grep -q -- '--pull'; then
+    set -- "$@" --pull never
+fi
+
+partage=/volume1/docker/art-collaboratif
+projet="$partage/art-collectif-codex-98477dc"
+archive="$partage/a-deployer/artcollectif.tar"
+sauvegardes="$partage/sauvegardes"
+proprietaire_sauvegardes=julienadmin
+
+[ -f "$archive" ] && [ -r "$archive" ] && [ ! -L "$archive" ] ||
+    fail "Archive introuvable ou illisible : $archive"
+
+cd "$projet"
+[ -f .env ] && [ -f docker-compose.yml ] && [ -f docker-compose.images.yml ] ||
+    fail 'Fichiers Compose ou .env manquants dans le projet NAS.'
+
+verrou="$projet/.artcollectif-deploy.lock"
+mkdir "$verrou" || fail 'Un déploiement est déjà en cours ou le verrou ne peut pas être créé.'
+trap 'rmdir "$verrou"' 0
+trap 'exit 1' HUP INT TERM
+
+conteneur=$(docker ps -q \
+    --filter label=com.docker.compose.project=artcollectif-test \
+    --filter label=com.docker.compose.service=app)
+case "$conteneur" in
+    ''|*[!0123456789abcdef]*) fail 'Un seul conteneur app doit être en cours dans artcollectif-test.' ;;
+esac
+montage=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{println .Type .Name}}{{end}}{{end}}' "$conteneur")
+[ "$montage" = 'volume artcollectif-test_nas_art_data' ] || fail 'Le volume du canevas ne correspond pas au projet attendu.'
+
+chargement=$(docker load -i "$archive")
+printf '%s\n' "$chargement"
+revision=$(printf '%s\n' "$chargement" | sed -n 's/^Loaded image: artcollectif-test-app:\([0-9a-f]\{40\}\)$/\1/p')
+[ "${#revision}" -eq 40 ] || fail 'L’archive doit contenir une image app avec un SHA Git complet.'
+printf '%s\n' "$chargement" | grep -Fxq "Loaded image: artcollectif-test-web:$revision" ||
+    fail 'Les images app et web de l’archive doivent correspondre au même commit.'
+
+[ ! -L "$sauvegardes" ] || fail 'Le dossier de sauvegardes doit être un dossier ordinaire.'
+if [ ! -d "$sauvegardes" ]; then
+    mkdir "$sauvegardes"
+    chown "$proprietaire_sauvegardes" "$sauvegardes"
+fi
+sauvegarde=$(mktemp -d "$sauvegardes/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+dossier="/tmp/${sauvegarde##*/}"
+docker exec "$conteneur" node --import tsx scripts/backup.ts /data/art.sqlite "$dossier"
+docker exec "$conteneur" tar -C "$dossier" -cf - . > "$sauvegarde/canevas.tar"
+tar -xf "$sauvegarde/canevas.tar" -C "$sauvegarde"
+(cd "$sauvegarde" && sha256sum -c SHA256SUMS)
+rm "$sauvegarde/canevas.tar"
+docker exec "$conteneur" rm -rf -- "$dossier"
+chown -R "$proprietaire_sauvegardes" "$sauvegarde"
+printf 'Sauvegarde vérifiée : %s\n' "$sauvegarde"
+
+CODE_REVISION="$revision" compose --env-file .env -p artcollectif-test \
+    -f docker-compose.yml -f docker-compose.images.yml "$@"
+
+printf 'Version lancée : %s\n' "$revision"

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    printf '%s\n' 'Usage : build-nas-test DOSSIER_DE_LIVRAISON' >&2
+    exit 1
+fi
+
+depot=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+revision=$(git -C "$depot" rev-parse HEAD)
+destination=$1
+mkdir -p "$destination"
+
+contexte=$(mktemp)
+archive_temporaire=$(mktemp "$destination/.artcollectif.XXXXXX") || {
+    rm -f "$contexte"
+    exit 1
+}
+trap 'rm -f "$contexte" "$archive_temporaire"' 0
+trap 'exit 1' HUP INT TERM
+
+# Le contexte contient exactement les fichiers de la révision livrée.
+git -C "$depot" archive --format=tar --output="$contexte" "$revision"
+docker_pc() {
+    docker --host unix:///var/run/docker.sock "$@"
+}
+
+image_app="artcollectif-test-app:$revision"
+image_web="artcollectif-test-web:$revision"
+docker_pc build --target app -t "$image_app" - < "$contexte"
+docker_pc build --target web -t "$image_web" - < "$contexte"
+docker_pc image save -o "$archive_temporaire" "$image_app" "$image_web"
+mv -fT "$archive_temporaire" "$destination/artcollectif.tar"
+
+printf 'Archive prête : %s/artcollectif.tar\n' "$destination"

@@ -1,0 +1,5 @@
+services:
+  app:
+    image: "artcollectif-test-app:${CODE_REVISION:?CODE_REVISION required}"
+  web:
+    image: "artcollectif-test-web:${CODE_REVISION:?CODE_REVISION required}"
