@@ -7,6 +7,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join,dirname } from 'node:path';
 import { Readable } from 'node:stream';
+import {baseImagePath} from '../database/base-image';
 import type { Store } from '../database/store';
 
 type Query={seq?:string;at?:string;moderation?:string;scale?:string};
@@ -28,7 +29,7 @@ export function registerExports(app:FastifyInstance,store:Store,dbPath:string) {
       const worker=spawn(process.execPath,['--max-old-space-size=384','--import','tsx',fileURLToPath(new URL('../../../scripts/render-image.ts',import.meta.url))],{stdio:['pipe','ignore','pipe']});
       let stderr='';worker.stderr.on('data',data=>{stderr=(stderr+String(data)).slice(-4096);});worker.stdin.on('error',()=>{});
       const finished=new Promise<void>((resolve,reject)=>{worker.once('error',reject);worker.once('close',code=>code===0?resolve():reject(new Error(`Image worker failed (${code}): ${stderr}`)));});
-      const timeout=setTimeout(()=>worker.kill('SIGKILL'),300000);worker.stdin.end(JSON.stringify({database,output,snapshotDirectory:join(dirname(dbPath),'snapshots'),target,revision:p.moderation_revision,mode,scale,palette:JSON.parse(p.palette_json),baseImagePath:p.base_image_path,overlay:overlayOnly,overrides}));
+      const timeout=setTimeout(()=>worker.kill('SIGKILL'),300000);worker.stdin.end(JSON.stringify({database,output,snapshotDirectory:join(dirname(dbPath),'snapshots'),target,revision:p.moderation_revision,mode,scale,palette:JSON.parse(p.palette_json),baseImagePath:!overlayOnly && p.base_image_path ? baseImagePath(dbPath,p.base_image_path) : null,overlay:overlayOnly,overrides}));
       try {await finished;} finally {clearTimeout(timeout);}
       const directory=dir,stream=createReadStream(output),cleanup=()=>{if(!handedOff)return;handedOff=false;void rm(directory,{recursive:true,force:true});active--;};handedOff=true;stream.once('close',cleanup);stream.once('error',cleanup);reply.raw.once('close',()=>stream.destroy());
       return reply.header('Cache-Control','no-store').header('X-Art-Sequence',target).header('X-Art-Moderation-Revision',p.moderation_revision).header('X-Art-Moderation',mode).type('image/png').send(stream);

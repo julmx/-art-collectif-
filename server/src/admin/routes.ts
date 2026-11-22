@@ -3,7 +3,8 @@ import type { Server } from 'socket.io';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { writeFile, rename, readFile, mkdir, readdir, realpath, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import {baseImagePath} from '../database/base-image';
 import sharp from 'sharp';
 import { validPalette } from '../../../shared/palette';
 import { WIDTH, HEIGHT } from '../../../shared/raster';
@@ -50,7 +51,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
       await mkdir(options.dataDir,{recursive:true,mode:0o700}); const digest=createHash('sha256').update(req.body).digest('hex'); const name=`base-${digest}.png`, path=join(options.dataDir,name), temp=join(options.dataDir,`.${randomBytes(12).toString('hex')}.tmp`);
       await writeFile(temp,req.body,{mode:0o600,flag:'wx'}); await rename(temp,path);
       // Another request could open the project while the PNG is being decoded.
-      const result=store.db.prepare("UPDATE project SET base_image_path=?,base_image_checksum=? WHERE id=1 AND status='draft'").run(path,digest);
+      const result=store.db.prepare("UPDATE project SET base_image_path=?,base_image_checksum=? WHERE id=1 AND status='draft'").run(name,digest);
       if(!result.changes) return reply.code(409).send({error:'PROJECT_LOCKED'});
       return {ok:true,checksum:digest};
   });
@@ -107,5 +108,5 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
     const id=(req.params as {archiveId:string}).archiveId;if(!/^[A-Za-z0-9_-]{1,100}$/.test(id))return reply.code(404).send();
     try {const dir=await realpath(join(options.dataDir,'archives')),file=await realpath(join(dir,`${id}.zip`));if(!file.startsWith(dir+'/')||!(await stat(file)).isFile())return reply.code(404).send();return reply.header('Cache-Control','no-store').header('Content-Disposition',`attachment; filename="${id}.zip"`).type('application/zip').send(createReadStream(file));} catch{return reply.code(404).send();}
   });
-  app.get('/api/base.png',async (_req,reply)=>{ const p=store.db.prepare('SELECT base_image_path FROM project WHERE id=1').get() as {base_image_path:string|null}; if(!p.base_image_path || !resolve(p.base_image_path).startsWith(resolve(options.dataDir)+'/')) return reply.code(404).send(); try {return reply.header('Cache-Control','no-store').type('image/png').send(await readFile(p.base_image_path));} catch {return reply.code(404).send();} });
+  app.get('/api/base.png',async (_req,reply)=>{ const p=store.db.prepare('SELECT base_image_path FROM project WHERE id=1').get() as {base_image_path:string|null}; if(!p.base_image_path) return reply.code(404).send(); try {return reply.header('Cache-Control','no-store').type('image/png').send(await readFile(baseImagePath(options.dbPath,p.base_image_path)));} catch {return reply.code(404).send();} });
 }
