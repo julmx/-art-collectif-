@@ -7,6 +7,8 @@ export const DRAW_PART_WORK = 400_000;
 export type Point = readonly [number, number];
 export type Cell = readonly [number, number, number];
 
+const brushMasks = new Map<number, Point[]>(SIZES.map(size => [size, brushMask(size)]));
+
 export function paintPixel(x: number, y: number, colorId: number): Cell[] {
   return x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT ? [[x, y, colorId]] : [];
 }
@@ -67,10 +69,17 @@ export function drawPartLength(points: readonly Point[], diameter: number): numb
 }
 
 export function paintBrush(points: readonly Point[], diameter: number, colorId: number): Cell[] {
-  const mask = brushMask(diameter), cells: Cell[] = [], seen = new Set<number>();
+  const mask = brushMasks.get(diameter);
+  if (!mask) throw new Error('Invalid brush diameter');
+  const cells: Cell[] = [], seen = new Set<number>(), centers = new Set<number>();
   for (let i = 0; i < points.length; i++) {
     const previous = points[Math.max(0, i - 1)], current = points[i];
     for (const [cx, cy] of linePoints(previous[0], previous[1], current[0], current[1])) {
+      if (cx >= 0 && cx < WIDTH && cy >= 0 && cy < HEIGHT) {
+        const center = cy * WIDTH + cx;
+        if (centers.has(center)) continue;
+        centers.add(center);
+      }
       for (const [dx, dy] of mask) {
         const x=cx+dx, y=cy+dy, index=y*WIDTH+x;
         if (x>=0 && x<WIDTH && y>=0 && y<HEIGHT && !seen.has(index)) {seen.add(index);cells.push([x,y,colorId]);}

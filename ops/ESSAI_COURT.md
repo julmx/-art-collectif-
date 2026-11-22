@@ -28,3 +28,9 @@ Les 50 clients resynchronisés ont convergé avec le serveur et le rejeu ; aucun
 Le générateur distingue désormais les refus par code, les retransmissions par cause (expiration d’acquittement, limitation ou stockage indisponible) et les commandes non envoyées lorsque sa propre file atteint sa limite. Les chiffres historiques ne contiennent pas ces catégories : ils ne permettent donc pas d’attribuer les 7 126 rejets à une cause précise. Une nouvelle mesure instrumentée est nécessaire.
 
 Un essai local de 10 secondes après ces changements a envoyé et acquitté 5 049 commandes, sans rejet ni retransmission ; p95 : 276,46 ms ; convergence et rejeu réussis. Il a chevauché la fin de la suite de tests navigateur et reste indicatif. Il ne valide ni la charge prolongée, ni l’hébergement cible.
+
+## Mesurer le délai avant envoi et l’acquittement
+
+Lancer `node --import tsx scripts/load-full.ts 1800` sur un environnement de recette disposant de la même capacité que l’hébergement cible. Le script démarre un serveur de test avec sa propre base SQLite, simule 50 clients et effectue une sauvegarde locale. Il affiche le p95 du retard entre l’envoi planifié et l’envoi effectif (`p95BeforeSendMs`), le p95 depuis le premier envoi (`p95Ms`) et le p95 de la dernière tentative réussie (`p95SuccessfulAttemptMs`). Les compteurs de file, les motifs de refus et les comparaisons du rejeu et des clients accompagnent ces mesures.
+
+Sur un essai local de 60 secondes avec l’optimisation de la rastérisation, les 30 043 commandes ont été acquittées sans refus ni retransmission. Le p95 d’acquittement était de 64,63 ms, le retard avant envoi de 2,52 ms au p95 et le pic de file de 100 commandes. Les grilles ont convergé, le rejeu concordait et la sauvegarde locale a réussi. La recette de 30 minutes avec sauvegarde extérieure sur l’hébergement cible reste à faire.
