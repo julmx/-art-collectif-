@@ -25,7 +25,10 @@ export async function applyModeration(store:Store, dbPath:string, strokes:{parti
   try {await new Promise<void>((resolve,reject)=>{worker.once('error',reject);worker.once('close',code=>code===0?resolve():reject(new Error(`Reconstruction interrompue : ${error}`)));});} finally {clearTimeout(timer);}
   if(size!==WIDTH*HEIGHT)throw new Error('INVALID_REBUILD');
   const grid = new Uint8Array(Buffer.concat(chunks));
-  const hidden = store.hiddenStrokes(expectedRevision, decisions);
+  const affected = new Set(strokes.map(s => JSON.stringify([s.participantId, s.strokeId])));
+  const isHidden = (participantId:string, strokeId:string) => affected.has(JSON.stringify([participantId, strokeId]))
+    ? action === 'hide'
+    : store.hidden(participantId, strokeId, expectedRevision);
   let appliedSeq = expectedSeq;
   for (;;) {
     if (!store.healthy) throw new Error('STORAGE_UNAVAILABLE');
@@ -36,7 +39,7 @@ export async function applyModeration(store:Store, dbPath:string, strokes:{parti
     if (appliedSeq === store.seq) return store.commitModeration(strokes, action, reason, grid);
 
     const target = Math.min(store.seq, appliedSeq + REPLAY_CHUNK_SIZE);
-    store.replayInto(grid, appliedSeq, target, hidden);
+    store.replayInto(grid, appliedSeq, target, isHidden);
     appliedSeq = target;
     if (appliedSeq < store.seq) await yieldToIO();
   }
