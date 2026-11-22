@@ -20,7 +20,7 @@ export class CollaborationClient {
   private palette: string[] = [];
   private undoing = false;
   constructor(
-    private changed: (grid: Uint8Array, available: boolean, status: string, palette:string[], reset:boolean) => void,
+    private changed: (available: boolean, status: string, palette:string[], reset:boolean) => void,
     private rejected?: (command: DrawCommand, code: string) => void,
   ) {}
   async connect() {
@@ -89,9 +89,12 @@ export class CollaborationClient {
       this.emit(); this.flush();
     });
   }
-  private emit(reset=false) {
+  displayGrid() {
     const display=this.confirmed.slice();
     for (const {command:c,preview} of this.pending) if (preview) applyCells(display,paintBrush(c.points,c.size,c.colorId));
-    this.changed(display,this.ready && this.connected && this.status==='open'&&!this.banned&&!this.undoing,this.connected ? (this.banned?'banned':this.status) : 'disconnected',this.palette,reset);
+    return display;
+  }
+  private emit(reset=false) {
+    this.changed(this.ready && this.connected && this.status==='open'&&!this.banned&&!this.undoing,this.connected ? (this.banned?'banned':this.status) : 'disconnected',this.palette,reset);
   }
 }
