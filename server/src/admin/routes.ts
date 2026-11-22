@@ -16,6 +16,17 @@ import { registerModerationView } from './moderation-view';
 
 export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:{dataDir:string;dbPath:string;passwordHash?:string;secureCookie:boolean; state:()=>unknown}) {
   const sessions=new Map<string,number>(), attempts=new Map<string,{count:number;until:number}>();
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [tokenHash, expiry] of sessions) {
+      if (expiry <= now) sessions.delete(tokenHash);
+    }
+    for (const [ip, attempt] of attempts) {
+      if (attempt.until <= now) attempts.delete(ip);
+    }
+  }, 60_000);
+  cleanup.unref();
+  app.addHook('onClose', async () => { clearInterval(cleanup); });
   const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
   const verify=(password:string) => {
     const [salt,digest] = (options.passwordHash || '').split(':');
