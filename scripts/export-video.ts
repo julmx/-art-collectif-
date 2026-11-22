@@ -5,11 +5,12 @@ import { join,resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import {baseImagePath} from '../server/src/database/base-image';
 import sharp from 'sharp';
 import { WIDTH,HEIGHT,applyCells,paintBrush } from '../shared/raster';
 import type { DrawCommand } from '../shared/protocol';
 
-export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;width?:number;height?:number;endSeq?:number;captureAt?:string;metadata?:string}) {
+export async function exportVideo(args:{database:string;output:string;mode:'activity'|'chronological';moderation:'raw'|'moderated';duration:number;fps:number;scale:number;width?:number;height?:number;endSeq?:number;captureAt?:string;metadata?:string}, capturedBase?:Buffer) {
   if(!['activity','chronological'].includes(args.mode)||!['raw','moderated'].includes(args.moderation)||!Number.isFinite(args.duration)||args.duration<=0||args.duration>3600||!Number.isInteger(args.fps)||args.fps<1||args.fps>60||!Number.isInteger(args.scale)||args.scale<1||args.scale>8) throw new Error('Paramètres vidéo invalides');
   if ((args.width !== undefined && args.width !== WIDTH*args.scale) || (args.height !== undefined && args.height !== HEIGHT*args.scale) || (args.captureAt !== undefined && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(args.captureAt) || Number.isNaN(Date.parse(args.captureAt))))) throw new Error('Résolution ou instant de capture invalide');
   const dir=await mkdtemp(join(tmpdir(),'art-video-'));let source:DatabaseSync|undefined,copy:DatabaseSync|undefined,terminateEncoder:(()=>void)|undefined;
@@ -18,7 +19,7 @@ export async function exportVideo(args:{database:string;output:string;mode:'acti
     copy=new DatabaseSync(join(dir,'capture.sqlite'),{readOnly:true});
     const project=copy.prepare('SELECT * FROM project WHERE id=1').get() as {base_image_path:string|null;base_image_checksum:string|null;palette_json:string;started_at:string|null;closed_at:string|null;moderation_revision:number};
     if(!project.base_image_path) throw new Error('Fond absent'); if(args.mode==='chronological'&&!project.started_at) throw new Error('Export chronologique impossible avant ouverture');
-    const base=await readFile(project.base_image_path); if(createHash('sha256').update(base).digest('hex')!==project.base_image_checksum) throw new Error('Fond incompatible avec la capture');
+    const base=capturedBase ?? await readFile(baseImagePath(args.database,project.base_image_path)); if(createHash('sha256').update(base).digest('hex')!==project.base_image_checksum) throw new Error('Fond incompatible avec la capture');
     const max=Number((copy.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM draw_events').get() as {n:number}).n), end=args.endSeq ?? max;
     if(!Number.isSafeInteger(end)||end<0||end>max) throw new Error('Séquence de fin invalide');
     const captureSeq = args.mode === 'chronological' && args.captureAt

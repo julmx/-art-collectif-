@@ -10,6 +10,7 @@ import {once} from 'node:events';
 import yazl from 'yazl';
 import sharp from 'sharp';
 import {WIDTH,HEIGHT,paintBrush,applyCells} from '../shared/raster';
+import {baseImagePath} from '../server/src/database/base-image';
 import {exportVideo} from './export-video';
 const codeRoot=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function exportArchive(args:{database:string;output:string;moderation:'raw'|'moderated';videos?:boolean;metadata?:string}) {
@@ -18,7 +19,7 @@ export async function exportArchive(args:{database:string;output:string;moderati
   if(!['raw','moderated'].includes(args.moderation))throw new Error('Modération invalide');
   original=new DatabaseSync(resolve(args.database),{readOnly:true});await backup(original,join(temp,'capture.sqlite'));original.close();original=undefined;db=new DatabaseSync(join(temp,'capture.sqlite'),{readOnly:true});
   const p=db.prepare('SELECT * FROM project WHERE id=1').get() as {status:string;palette_json:string;base_image_path:string|null;base_image_checksum:string;title:string;description:string;participation_terms:string;started_at:string|null;closed_at:string|null;moderation_revision:number};
-  if(!p.base_image_path)throw new Error('Fond absent');const base=await readFile(p.base_image_path);if(createHash('sha256').update(base).digest('hex')!==p.base_image_checksum)throw new Error('Fond incompatible avec la capture');
+  if(!p.base_image_path)throw new Error('Fond absent');const base=await readFile(baseImagePath(args.database,p.base_image_path));if(createHash('sha256').update(base).digest('hex')!==p.base_image_checksum)throw new Error('Fond incompatible avec la capture');
   const maxSeq=Number((db.prepare('SELECT COALESCE(MAX(seq),0) n FROM draw_events').get() as {n:number}).n),captureAt=new Date().toISOString(),palette=JSON.parse(p.palette_json) as string[], hidden=new Set<string>();
   if(args.metadata)await writeFile(args.metadata,JSON.stringify({captureCompletedAt:captureAt,sequence:maxSeq,moderationRevision:p.moderation_revision}),{mode:0o600});
   const files:string[]=[];const add=async(name:string,data:string|Uint8Array)=>{await mkdir(dirname(join(temp,name)),{recursive:true});await writeFile(join(temp,name),data);files.push(name);};
@@ -29,7 +30,7 @@ export async function exportArchive(args:{database:string;output:string;moderati
   await add('overlay.png',await sharp(rgba,{raw:{width:WIDTH,height:HEIGHT,channels:4}}).png().toBuffer());await add('final.png',await sharp(base).composite([{input:rgba,raw:{width:WIDTH,height:HEIGHT,channels:4}}]).png().toBuffer());
   await mkdir(join(temp,'replay/shared'),{recursive:true});await mkdir(join(temp,'replay/scripts'),{recursive:true});for(const [src,dest] of [['shared/raster.ts','replay/shared/raster.ts'],['scripts/replay-archive.ts','replay/scripts/replay.ts'],['package.json','replay/package.json'],['package-lock.json','replay/package-lock.json']] as const){await copyFile(join(codeRoot,src),join(temp,dest));files.push(dest);}
   await add('README.txt','Relecture : cd replay ; npm ci ; npx tsx scripts/replay.ts [sequence] [fichier-sortie.png]. La politique de moderation du manifeste est appliquee retroactivement. Les contributions ne sont pas assorties d’une licence publique implicite.\n');
-  if(args.videos)for(const mode of ['chronological','activity'] as const)for(const moderation of ['raw','moderated'] as const){const name=`timelapse-${mode}-${moderation}.mp4`;await exportVideo({database:join(temp,'capture.sqlite'),output:join(temp,name),mode,moderation,duration:180,fps:25,scale:2,captureAt});files.push(name);}
+  if(args.videos)for(const mode of ['chronological','activity'] as const)for(const moderation of ['raw','moderated'] as const){const name=`timelapse-${mode}-${moderation}.mp4`;await exportVideo({database:join(temp,'capture.sqlite'),output:join(temp,name),mode,moderation,duration:180,fps:25,scale:2,captureAt},base);files.push(name);}
   const checksums:Record<string,string>={};for(const file of files){const hash=createHash('sha256');for await(const chunk of createReadStream(join(temp,file)))hash.update(chunk as Buffer);checksums[file]=hash.digest('hex');}
   let revision=process.env.CODE_REVISION;try{revision ||= execFileSync('git',['rev-parse','HEAD'],{cwd:codeRoot,encoding:'utf8'}).trim();}catch{} if(!revision)throw new Error('CODE_REVISION requis pour identifier le code');
   let ffmpeg='unavailable';try{ffmpeg=execFileSync('ffmpeg',['-version'],{encoding:'utf8'}).split('\n')[0];}catch{}
