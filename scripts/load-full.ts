@@ -40,7 +40,9 @@ try {
  const deadline = performance.now() + 10000;
  while (!clients.every(atFinalSequence) && performance.now() < deadline) await delay(20);
  const matchesCapture = (client:Monitor) => atFinalSequence(client) && Buffer.from(client.grid).equals(serverGrid);
- const convergence = clients.every(matchesCapture);
+ // A full state received after a gap can repair the grid, but the incremental stream failed.
+ const sequenceGaps = clients.reduce((sum, client) => sum + client.gaps, 0);
+ const convergence = sequenceGaps === 0 && clients.every(matchesCapture);
  await Promise.all(clients.map(client=>new Promise<void>((resolve,reject)=>{
    const timeout=setTimeout(()=>reject(new Error('Resynchronisation expirée')),10000);
    client.socket.once('canvas:state',()=>{clearTimeout(timeout);resolve();});
@@ -48,5 +50,5 @@ try {
  })));
  const recoveryConvergence = clients.every(matchesCapture);
  const replay=Boolean(capture.replay);const disk=(await stat(db)).size+(await stat(db+'-wal').catch(()=>({size:0}))).size;const p95=(samples:number[])=>{samples.sort((a,b)=>a-b);return samples[Math.floor(samples.length*.95)]??null;};const ackP95=p95(times);
- const report={seconds,clients:50,targetMessagesPerSecond:500,sent,accepted,rejected,retries,rejectionReasons,retryReasons,skippedAtCapacity,pending:inflight.size,peakPending:peak,p95Ms:ackP95,p95BeforeSendMs:p95(queueTimes),p95SuccessfulAttemptMs:p95(attemptTimes),sequence,eventCount:count,reconnects,sequenceGaps:clients.reduce((sum,c)=>sum+c.gaps,0),convergence,recoveryConvergence,replay,backupsLocalOk:backupOk,backupFailed,maxRssBytes:maxRss,serverPeakRssBytes:capture.peakRss,databaseAndWalBytes:disk,limits:'Clients et serveur locaux ; sauvegarde hors site, matériel cible, essais aux limites invalides et rafales restent à vérifier séparément.'};process.stdout.write(JSON.stringify(report,null,2)+'\n');if(sent<seconds*500*.98||accepted!==sent||count!==accepted||inflight.size||rejected||skippedAtCapacity||!convergence||!recoveryConvergence||!replay||backupFailed||ackP95===null||ackP95>=500)process.exitCode=1;
+ const report={seconds,clients:50,targetMessagesPerSecond:500,sent,accepted,rejected,retries,rejectionReasons,retryReasons,skippedAtCapacity,pending:inflight.size,peakPending:peak,p95Ms:ackP95,p95BeforeSendMs:p95(queueTimes),p95SuccessfulAttemptMs:p95(attemptTimes),sequence,eventCount:count,reconnects,sequenceGaps,convergence,recoveryConvergence,replay,backupsLocalOk:backupOk,backupFailed,maxRssBytes:maxRss,serverPeakRssBytes:capture.peakRss,databaseAndWalBytes:disk,limits:'Clients et serveur locaux ; sauvegarde hors site, matériel cible, essais aux limites invalides et rafales restent à vérifier séparément.'};process.stdout.write(JSON.stringify(report,null,2)+'\n');if(sent<seconds*500*.98||accepted!==sent||count!==accepted||inflight.size||rejected||skippedAtCapacity||!convergence||!recoveryConvergence||!replay||backupFailed||ackP95===null||ackP95>=500)process.exitCode=1;
 } finally {for(const client of clients)client.socket.disconnect();if(server.connected){const closed=new Promise<void>(resolve=>{server.once('exit',()=>resolve());setTimeout(()=>{server.kill();resolve();},5000).unref();});server.send({type:'stop'});await closed;}await rm(dir,{recursive:true,force:true});}
