@@ -5,17 +5,21 @@ import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {io as makeClient,type Socket} from 'socket.io-client';
 import {fork} from 'node:child_process';
+import {DatabaseSync} from 'node:sqlite';
 import {backupProject} from './backup';
 import {WIDTH,HEIGHT} from '../shared/raster';
-import type {DrawCommand} from '../shared/protocol';
+import type {DrawCommand,DrawResult} from '../shared/protocol';
 const seconds=Number(process.argv[2]||1800);if(!Number.isInteger(seconds)||seconds<5||seconds>3600)throw new Error('Durée attendue entre 5 et 3600 secondes');
 const dir=await mkdtemp(join(tmpdir(),'art-load-full-')),db=join(dir,'db.sqlite');
 const server=fork('scripts/load-server.ts',[db],{execArgv:['--import','tsx'],silent:true});
 const message=(type:string)=>new Promise<Record<string,unknown>>((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error(`Serveur de charge : ${type} expiré`)),type==='capture'?600000:30000);const handler=(m:Record<string,unknown>)=>{if(m.type===type){clearTimeout(timeout);server.off('message',handler);resolve(m);}};server.on('message',handler);server.once('exit',code=>{clearTimeout(timeout);reject(new Error(`Serveur arrêté : ${code}`));});});
 type Monitor={socket:Socket;grid:Uint8Array;seq:number;revision:number;ready:boolean;gaps:number};
-const clients:Monitor[]=[],times:number[]=[],queueTimes:number[]=[],attemptTimes:number[]=[],inflight=new Map<string,number>();const rejectionReasons:Record<string,number>={}, retryReasons:Record<string,number>={};let skippedAtCapacity=0;
+const clients:Monitor[]=[],times:number[]=[],queueTimes:number[]=[],attemptTimes:number[]=[];
+const inflight = new Set<string>(), rejectedOperations = new Set<string>();
+const rejectionReasons:Record<string,number>={}, retryReasons:Record<string,number>={};let skippedAtCapacity=0;
 const countReason=(counts:Record<string,number>,key:string)=>{counts[key]=(counts[key]||0)+1;};
-let sent=0,accepted=0,rejected=0,retries=0,peak=0,reconnects=0,backupOk=0,backupFailed=0,maxRss=0,backupWork:Promise<void>=Promise.resolve();
+let sent=0,accepted=0,duplicateAcks=0,retries=0,peak=0,reconnects=0,backupOk=0,backupFailed=0,maxRss=0,backupWork:Promise<void>=Promise.resolve();
+let measurementFinished = false;
 try {
  const ready=await message('ready');const url=`http://127.0.0.1:${ready.port}`;
  for(let i=0;i<50;i++){
@@ -26,15 +30,41 @@ try {
   socket.on('disconnect',()=>{monitor.ready=false;});const ready=new Promise<void>((ok,fail)=>{socket.once('canvas:state',()=>ok());socket.once('connect_error',fail);});socket.connect();await ready;
  }
  const start=performance.now(),stop=start+seconds*1000;let tick=0;
- const send=(client:Monitor,command:DrawCommand,started:number,attempt=0)=>{const attemptStarted=performance.now();client.socket.timeout(10000).emit('draw:submit',command,(error:Error|null,result:{accepted:boolean;code?:string})=>{if(!inflight.has(command.opId))return;if(error||result?.code==='RATE_LIMITED'||result?.code==='STORAGE_UNAVAILABLE'){const cause=error?'ACK_TIMEOUT':result?.code||'UNKNOWN';if(attempt<3){countReason(retryReasons,cause);retries++;setTimeout(()=>send(client,command,started,attempt+1),1000);}else{inflight.delete(command.opId);rejected++;countReason(rejectionReasons,cause);}return;}inflight.delete(command.opId);if(result?.accepted){accepted++;const ackAt=performance.now();times.push(ackAt-started);attemptTimes.push(ackAt-attemptStarted);}else {rejected++;countReason(rejectionReasons,result?.code||'UNKNOWN');}});};
+ const send = (client:Monitor, command:DrawCommand, started:number, attempt=0) => {
+  if (measurementFinished) return;
+  const attemptStarted = performance.now();
+  client.socket.timeout(10000).emit('draw:submit',command,(error:Error|null,result?:DrawResult) => {
+   if (measurementFinished || !inflight.has(command.opId)) return;
+   const cause = error ? 'ACK_TIMEOUT' : result?.accepted === false ? result.code : 'UNKNOWN';
+   if (attempt < 3 && (error || cause === 'RATE_LIMITED' || cause === 'STORAGE_UNAVAILABLE')) {
+    countReason(retryReasons,cause);
+    retries++;
+    setTimeout(() => send(client,command,started,attempt+1),1000);
+    return;
+   }
+   inflight.delete(command.opId);
+   if (!error && result?.accepted) {
+    accepted++;
+    if (result.duplicate) duplicateAcks++;
+    const ackAt = performance.now();
+    times.push(ackAt-started);
+    attemptTimes.push(ackAt-attemptStarted);
+   } else {
+    rejectedOperations.add(command.opId);
+    countReason(rejectionReasons,cause);
+   }
+  });
+ };
  while(performance.now()<stop){await delay(Math.max(0,start+tick*100-performance.now()));
   if(tick>0&&tick%100===0){const client=clients[Math.floor(tick/100)%clients.length];client.socket.disconnect();client.socket.connect();reconnects++;}
   if(tick===10||tick>10&&(tick-10)%18000===0){const path=join(dir,`backup-${tick}`);backupWork=backupWork.then(()=>backupProject(db,path).then(()=>{backupOk++;}).catch(()=>{backupFailed++;}));}
-  for(let i=0;i<clients.length;i++){const client=clients[i];if(!client.ready||!client.socket.connected)continue;if(inflight.size>=5000){skippedAtCapacity++;continue;}const complex=(tick*50+i)%25===0,brush=complex||(tick+i)%4===0,x=(i*13+tick)%700+10,y=(tick*3+i*7)%460+10;const points:DrawCommand['points']=complex?Array.from({length:64},(_,n)=>[x+n%4,y+Math.floor(n/4)%4] as const):[[x,y],[x+1,y+1]];const command:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:brush?'brush':'pixel',colorId:i%24+1,size:brush?(complex?21:[1,3,5,9,15][(tick+i)%5]):1,points};const now=performance.now();queueTimes.push(Math.max(0,now-(start+tick*100)));inflight.set(command.opId,now);sent++;send(client,command,now);}
+  for(let i=0;i<clients.length;i++){const client=clients[i];if(!client.ready||!client.socket.connected)continue;if(inflight.size>=5000){skippedAtCapacity++;continue;}const complex=(tick*50+i)%25===0,brush=complex||(tick+i)%4===0,x=(i*13+tick)%700+10,y=(tick*3+i*7)%460+10;const points:DrawCommand['points']=complex?Array.from({length:64},(_,n)=>[x+n%4,y+Math.floor(n/4)%4] as const):[[x,y],[x+1,y+1]];const command:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:brush?'brush':'pixel',colorId:i%24+1,size:brush?(complex?21:[1,3,5,9,15][(tick+i)%5]):1,points};const now=performance.now();queueTimes.push(Math.max(0,now-(start+tick*100)));inflight.add(command.opId);sent++;send(client,command,now);}
   peak=Math.max(peak,inflight.size);maxRss=Math.max(maxRss,process.memoryUsage().rss);tick++;if(tick%600===0)process.stderr.write(JSON.stringify({phase:'en-cours',secondsElapsed:Math.round((performance.now()-start)/1000),sent,accepted,pending:inflight.size,peakPending:peak})+'\n');
  }
  const drain=Date.now()+30000;while(inflight.size&&Date.now()<drain)await delay(100);await backupWork;
- process.stderr.write(JSON.stringify({phase:'mesure-terminee',seconds,sent,accepted,rejected,retries,pending:inflight.size,peakPending:peak})+'\n');
+ measurementFinished = true;
+ const rejected = rejectedOperations.size, pending = inflight.size;
+ process.stderr.write(JSON.stringify({phase:'mesure-terminee',seconds,sent,accepted,rejected,retries,pending,peakPending:peak})+'\n');
  const capturePromise=message('capture');server.send({type:'capture'});const capture=await capturePromise,sequence=Number(capture.seq),count=Number(capture.count),serverGrid=Buffer.from(String(capture.grid),'base64');
  const atFinalSequence = (client:Monitor) => client.ready && client.seq === sequence;
  const deadline = performance.now() + 10000;
@@ -49,6 +79,30 @@ try {
    client.socket.emit('canvas:resync');
  })));
  const recoveryConvergence = clients.every(matchesCapture);
+ let rejectedEventsPersisted = 0, pendingEventsPersisted = 0;
+ if (rejected || pending) {
+  const journal = new DatabaseSync(db, {readOnly:true});
+  try {
+   // Compare operation IDs against the same journal boundary used for the replay.
+   for (const {op_id} of journal.prepare('SELECT op_id FROM draw_events WHERE seq <= ?').iterate(sequence)) {
+    if (rejectedOperations.has(op_id as string)) rejectedEventsPersisted++;
+    if (inflight.has(op_id as string)) pendingEventsPersisted++;
+   }
+  } finally {
+   journal.close();
+  }
+ }
  const replay=Boolean(capture.replay);const disk=(await stat(db)).size+(await stat(db+'-wal').catch(()=>({size:0}))).size;const p95=(samples:number[])=>{samples.sort((a,b)=>a-b);return samples[Math.floor(samples.length*.95)]??null;};const ackP95=p95(times);
- const report={seconds,clients:50,targetMessagesPerSecond:500,sent,accepted,rejected,retries,rejectionReasons,retryReasons,skippedAtCapacity,pending:inflight.size,peakPending:peak,p95Ms:ackP95,p95BeforeSendMs:p95(queueTimes),p95SuccessfulAttemptMs:p95(attemptTimes),sequence,eventCount:count,reconnects,sequenceGaps,convergence,recoveryConvergence,replay,backupsLocalOk:backupOk,backupFailed,maxRssBytes:maxRss,serverPeakRssBytes:capture.peakRss,databaseAndWalBytes:disk,limits:'Clients et serveur locaux ; sauvegarde hors site, matériel cible, essais aux limites invalides et rafales restent à vérifier séparément.'};process.stdout.write(JSON.stringify(report,null,2)+'\n');if(sent<seconds*500*.98||accepted!==sent||count!==accepted||inflight.size||rejected||skippedAtCapacity||!convergence||!recoveryConvergence||!replay||backupFailed||ackP95===null||ackP95>=500)process.exitCode=1;
+ const report = {
+  seconds,clients:50,targetMessagesPerSecond:500,sent,accepted,rejected,retries,rejectionReasons,retryReasons,
+  skippedAtCapacity,pending,peakPending:peak,drawDiagnostics:capture.drawDiagnostics,
+  p95Ms:ackP95,p95BeforeSendMs:p95(queueTimes),p95SuccessfulAttemptMs:p95(attemptTimes),
+  sequence,eventCount:count,duplicateAcks,rejectedEventsPersisted,pendingEventsPersisted,
+  eventCountDiscrepancy:count-accepted-rejectedEventsPersisted-pendingEventsPersisted,
+  reconnects,sequenceGaps,convergence,recoveryConvergence,replay,
+  backupsLocalOk:backupOk,backupFailed,maxRssBytes:maxRss,serverPeakRssBytes:capture.peakRss,databaseAndWalBytes:disk,
+  limits:'Clients et serveur locaux ; sauvegarde hors site, matériel cible, essais aux limites invalides et rafales restent à vérifier séparément.',
+ };
+ process.stdout.write(JSON.stringify(report,null,2)+'\n');
+ if(sent<seconds*500*.98||accepted!==sent||count!==accepted||pending||rejected||skippedAtCapacity||!convergence||!recoveryConvergence||!replay||backupFailed||ackP95===null||ackP95>=500)process.exitCode=1;
 } finally {for(const client of clients)client.socket.disconnect();if(server.connected){const closed=new Promise<void>(resolve=>{server.once('exit',()=>resolve());setTimeout(()=>{server.kill();resolve();},5000).unref();});server.send({type:'stop'});await closed;}await rm(dir,{recursive:true,force:true});}

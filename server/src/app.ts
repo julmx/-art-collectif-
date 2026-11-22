@@ -12,13 +12,21 @@ import { Snapshots } from './renderer/snapshots';
 import { applyModeration } from './admin/moderation-apply';
 
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+const MAX_DRAW_QUEUE_DEPTH = 1000;
 const RESYNC_INTERVAL_MS = 1000;
 const UNDO_PARTICIPANT_INTERVAL_MS = 3000;
 const UNDO_REBUILD_PAUSE_MS = 1000;
 // Each grid entry has at most two digits and one separator. Allow room for metadata and framing.
 const FULL_STATE_BYTES = WIDTH * HEIGHT * 3 + 2048;
 
-export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean; trustedProxy?:string }) {
+type DrawLimitReason = 'participant' | 'queue';
+
+type DrawDiagnostics = {
+  onQueueDepth: (depth: number) => void;
+  onRateLimit: (reason: DrawLimitReason, queueDepth: number) => void;
+};
+
+export async function createApp(options: { dbPath: string; origin: string; secureCookie?: boolean; adminPasswordHash?:string; logger?:boolean; trustedProxy?:string; drawDiagnostics?:DrawDiagnostics }) {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 16 * 1024, trustProxy: options.trustedProxy || false });
   await app.register(cookie);
   const store = new Store(options.dbPath,true);
@@ -165,10 +173,22 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       const bucket = buckets.get(id) ?? {tokens:40,time:now};
       bucket.tokens = Math.min(40,bucket.tokens + (now-bucket.time)*0.02); bucket.time=now;
       buckets.set(id,bucket);
-      if (bucket.tokens < 1) { (ack as (r:unknown)=>void)({opId:typeof (input as {opId?:unknown})?.opId === 'string' ? (input as {opId:string}).opId : '',accepted:false,code:'RATE_LIMITED'}); return; }
-      bucket.tokens -= 1;
-      if(queue.length>=1000){(ack as (r:unknown)=>void)({opId:typeof (input as {opId?:unknown})?.opId==='string'?(input as {opId:string}).opId:'',accepted:false,code:'RATE_LIMITED'});return;}
-      queue.push({participantId:id,input,ack:ack as (value:unknown)=>void});if(!flushTimer)flushTimer=setTimeout(flush,5);
+      let limitReason: DrawLimitReason | undefined;
+      if (bucket.tokens < 1) {
+        limitReason = 'participant';
+      } else {
+        bucket.tokens -= 1;
+        if (queue.length >= MAX_DRAW_QUEUE_DEPTH) limitReason = 'queue';
+      }
+      if (limitReason) {
+        options.drawDiagnostics?.onRateLimit(limitReason, queue.length);
+        const opId = (input as {opId?:unknown} | null)?.opId;
+        ack({opId:typeof opId === 'string' ? opId : '',accepted:false,code:'RATE_LIMITED'});
+        return;
+      }
+      queue.push({participantId:id,input,ack:ack as (value:unknown)=>void});
+      options.drawDiagnostics?.onQueueDepth(queue.length);
+      if (!flushTimer) flushTimer = setTimeout(flush,5);
     });
   });
   app.addHook('onClose', async () => { clearInterval(timer); if(flushTimer)clearTimeout(flushTimer); queue.length=0; await snapshotWork; io.close(); store.close(); });
