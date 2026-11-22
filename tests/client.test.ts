@@ -19,3 +19,19 @@ it('réémet une commande non confirmée et retire son aperçu lors d’un reset
 it('réessaie après une déconnexion imposée par le serveur',async()=>{
  vi.useFakeTimers();try{const client=new CollaborationClient(()=>{});await client.connect();const connect=vi.spyOn(mocks.socket,'connect');mocks.socket.handlers.get('disconnect')?.('io server disconnect');await vi.advanceTimersByTimeAsync(3000);expect(connect).toHaveBeenCalledTimes(1);}finally{vi.useRealTimers();}
 });
+
+it('signale un refus définitif et conserve les commandes des autres traits', async () => {
+  const refused = vi.fn();
+  const client = new CollaborationClient(() => {}, refused);
+  await client.connect();
+  mocks.socket.handlers.get('canvas:state')?.(state());
+  client.submit(command);
+  client.submit({...command, opId:'a2', partIndex:1});
+  const other = {...command, opId:'c', strokeId:'d'};
+  client.submit(other);
+
+  mocks.socket.sent[0].ack(null, {opId:'a', accepted:false, code:'COST_LIMIT_EXCEEDED'});
+
+  expect(refused).toHaveBeenCalledWith(command, 'COST_LIMIT_EXCEEDED');
+  expect(mocks.socket.sent.map(item => item.command)).toEqual([command, other]);
+});

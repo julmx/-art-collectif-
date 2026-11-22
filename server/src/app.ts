@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import { Server } from 'socket.io';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Store } from './database/store';
-import { WIDTH, HEIGHT } from '../../shared/raster';
+import { WIDTH, HEIGHT, SIZES, DRAW_PART_POINTS, DRAW_PART_WORK, estimateBrushWork, type Point } from '../../shared/raster';
 import { PALETTE } from '../../shared/palette';
 import { registerAdmin } from './admin/routes';
 import { dirname, join } from 'node:path';
@@ -38,9 +38,18 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
   const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
   // A batch is bounded both by message count and estimated raster work.
-  const cost=(input:unknown)=>{const c=input as {size?:unknown;points?:unknown};const masks:Record<number,number>={1:1,3:9,5:21,9:69,15:177,21:349};if(!c||typeof c!=='object'||typeof c.size!=='number'||!masks[c.size]||!Array.isArray(c.points)||c.points.length>64)return 1;let total=c.points.length?masks[c.size]:0;for(let i=0;i<c.points.length;i++){const p=c.points[i];if(!Array.isArray(p)||p.length!==2||!Number.isInteger(p[0])||!Number.isInteger(p[1])||p[0]<0||p[0]>=WIDTH||p[1]<0||p[1]>=HEIGHT)return 1;if(i){const prev=c.points[i-1];total+=(1+Math.max(Math.abs(p[0]-prev[0]),Math.abs(p[1]-prev[1])))*masks[c.size];}}return Math.min(total,400001);};
+  const cost = (input: unknown): number => {
+    const command = input as {size?: unknown; points?: unknown};
+    if (!command || typeof command.size !== 'number' || !SIZES.includes(command.size as typeof SIZES[number])
+        || !Array.isArray(command.points) || command.points.length > DRAW_PART_POINTS) return 1;
+    for (const point of command.points) {
+      if (!Array.isArray(point) || point.length !== 2 || !Number.isInteger(point[0]) || !Number.isInteger(point[1])
+          || point[0] < 0 || point[0] >= WIDTH || point[1] < 0 || point[1] >= HEIGHT) return 1;
+    }
+    return Math.min(estimateBrushWork(command.points as Point[], command.size), DRAW_PART_WORK + 1);
+  };
   const flush=()=>{
-    flushTimer=undefined;const batch:Queued[]=[];let work=0;while(queue.length&&batch.length<100){const next=cost(queue[0].input);if(batch.length&&work+next>400000)break;batch.push(queue.shift()!);work+=next;}if(!batch.length)return;
+    flushTimer=undefined;const batch:Queued[]=[];let work=0;while(queue.length&&batch.length<100){const next=cost(queue[0].input);if(batch.length&&work+next>DRAW_PART_WORK)break;batch.push(queue.shift()!);work+=next;}if(!batch.length)return;
     try {
       const results=store.submitBatch(batch),revision=store.revision();
       for(let i=0;i<batch.length;i++){

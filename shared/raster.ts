@@ -2,6 +2,8 @@
 export const WIDTH = 720;
 export const HEIGHT = 480;
 export const SIZES = [1, 3, 5, 9, 15, 21] as const;
+export const DRAW_PART_POINTS = 64;
+export const DRAW_PART_WORK = 400_000;
 export type Point = readonly [number, number];
 export type Cell = readonly [number, number, number];
 
@@ -37,6 +39,31 @@ export function brushMask(diameter: number): Point[] {
     if (4 * (x * x + y * y) <= diameter * diameter) points.push([x || 0, y || 0]);
   }
   return points;
+}
+
+const brushMaskSizes = new Map<number, number>(SIZES.map(size => [size, brushMask(size).length]));
+
+function brushSteps(point: Point, previous?: Point): number {
+  return previous ? 1 + Math.max(Math.abs(point[0] - previous[0]), Math.abs(point[1] - previous[1])) : 1;
+}
+
+export function estimateBrushWork(points: readonly Point[], diameter: number): number {
+  const size = brushMaskSizes.get(diameter);
+  if (size === undefined) throw new Error('Invalid brush diameter');
+  return size * points.reduce((steps, point, i) => steps + brushSteps(point, points[i - 1]), 0);
+}
+
+/** Largest prefix that fits in one command, including its continuation point. */
+export function drawPartLength(points: readonly Point[], diameter: number): number {
+  const size = brushMaskSizes.get(diameter);
+  if (size === undefined) throw new Error('Invalid brush diameter');
+  let work = 0;
+  const max = Math.min(points.length, DRAW_PART_POINTS);
+  for (let i = 0; i < max; i++) {
+    work += size * brushSteps(points[i], points[i - 1]);
+    if (work > DRAW_PART_WORK) return i;
+  }
+  return max;
 }
 
 export function paintBrush(points: readonly Point[], diameter: number, colorId: number): Cell[] {
