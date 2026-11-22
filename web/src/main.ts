@@ -77,7 +77,18 @@ viewport.addEventListener('pointermove', e => { if (!pointers.has(e.pointerId)) 
 function end(e: PointerEvent) { if(restartId===e.pointerId)restartId=null; pointers.delete(e.pointerId); if (drawingId === e.pointerId) finishStroke(); gesture = null; if (pointers.size >= 2) startGesture(); }
 viewport.addEventListener('pointerup',end); viewport.addEventListener('pointercancel',end); viewport.addEventListener('lostpointercapture',end);
 document.querySelector('#zoom-in')!.addEventListener('click',()=>{ zoom=Math.min(4,zoom*1.25);transform(); }); document.querySelector('#zoom-out')!.addEventListener('click',()=>{ zoom=Math.max(.5,zoom/1.25);transform(); }); document.querySelector('#reset')!.addEventListener('click',()=>{ zoom=1;offsetX=0;offsetY=0;transform(); });
-document.querySelector<HTMLButtonElement>('#undo')!.addEventListener('click', async () => { finishStroke(); const status = document.querySelector<HTMLElement>('#undo-status')!; status.textContent = 'Annulation en cours…'; const result = await client.undo(); status.textContent = result === 'ok' ? 'Dernier tracé annulé.' : result === 'empty' ? 'Aucun tracé à annuler.' : 'Impossible d’annuler pour le moment. Réessayez.'; });
+document.querySelector<HTMLButtonElement>('#undo')!.addEventListener('click', async () => {
+  finishStroke();
+  const status = document.querySelector<HTMLElement>('#undo-status')!;
+  status.textContent = 'Annulation en cours…';
+  const messages = {
+    ok: 'Dernier tracé annulé.',
+    empty: 'Aucun tracé à annuler.',
+    'rate-limited': 'Patientez quelques secondes avant de réessayer.',
+    error: 'Impossible d’annuler pour le moment. Réessayez.',
+  };
+  status.textContent = messages[await client.undo()];
+});
 document.querySelector('#info')!.addEventListener('click',()=>document.querySelector<HTMLDialogElement>('#about')!.showModal());
 function refreshProject() { const background = new Image(); background.onload = () => { const buffer=document.createElement('canvas'); buffer.width=WIDTH; buffer.height=HEIGHT; const context=buffer.getContext('2d')!; context.drawImage(background,0,0); base=context.getImageData(0,0,WIDTH,HEIGHT).data; render(); }; background.src='/api/base.png';
 fetch('/api/project').then(r=>r.ok?r.json():null).then(project=>{ if(!project) return; document.querySelector('#project-description')!.textContent=project.description; document.title=project.title; document.querySelector('.brand')!.lastChild!.textContent=' '+project.title.toUpperCase(); document.querySelector('#project-terms')!.textContent=project.participationTerms; }).catch(()=>{}); }

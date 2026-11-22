@@ -13,6 +13,8 @@ import { applyModeration } from './admin/moderation-apply';
 
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 const RESYNC_INTERVAL_MS = 1000;
+const UNDO_PARTICIPANT_INTERVAL_MS = 3000;
+const UNDO_REBUILD_PAUSE_MS = 1000;
 // Each grid entry has at most two digits and one separator. Allow room for metadata and framing.
 const FULL_STATE_BYTES = WIDTH * HEIGHT * 3 + 2048;
 
@@ -24,9 +26,18 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const snapshot = await snapshots.latest(store.seq,store.revision());
   store.grid=store.replay(store.seq,'moderated',store.revision(),snapshot ?? undefined);
   snapshots.resetBaseline(snapshot);
+  const nextUndoByParticipant = new Map<string, number>();
+  let nextUndoRebuildAt = 0;
   let snapshotWork: Promise<void> = Promise.resolve(), snapshotPending=false;
   const scheduleSnapshot = () => { if(snapshotPending)return; snapshotPending=true; snapshotWork=snapshots.saveIfDue().catch(error=>app.log.error(error,'snapshot failed')).finally(()=>{snapshotPending=false;}); };
-  const timer=setInterval(scheduleSnapshot,30_000); timer.unref();
+  const timer = setInterval(() => {
+    scheduleSnapshot();
+    const now = performance.now();
+    for (const [participantId, nextUndoAt] of nextUndoByParticipant) {
+      if (nextUndoAt <= now) nextUndoByParticipant.delete(participantId);
+    }
+  }, 30_000);
+  timer.unref();
   const io = new Server(app.server, { maxHttpBufferSize: 16384, cors: { origin: options.origin }, allowRequest: (req, cb) => cb(null, !req.headers.origin || req.headers.origin === options.origin) });
   const hash = (token:string) => createHash('sha256').update(token).digest('hex');
   const identity = (token: string | undefined) => token && /^[a-f0-9]{64}$/.test(token) ? store.db.prepare('SELECT id FROM participants WHERE token_hash=?').get(hash(token)) as {id:string}|undefined : undefined;
@@ -133,11 +144,20 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     socket.on('draw:undo', async (ack:unknown) => {
       if (typeof ack !== 'function') return;
       const reply=ack as (result:unknown)=>void, participantId=socket.data.participantId as string;
+      const now = performance.now();
+      if (now < (nextUndoByParticipant.get(participantId) ?? 0) || now < nextUndoRebuildAt) {
+        reply({ok:false,code:'RATE_LIMITED'});
+        return;
+      }
+      nextUndoByParticipant.set(participantId, now + UNDO_PARTICIPANT_INTERVAL_MS);
       if (!store.healthy || store.isBanned(participantId) || (store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') { reply({ok:false,code:'UNAVAILABLE'}); return; }
       const row=store.db.prepare(`SELECT e.stroke_id FROM draw_events e WHERE e.participant_id=? AND COALESCE((SELECT a.action FROM moderation_actions a WHERE a.participant_id=e.participant_id AND a.stroke_id=e.stroke_id ORDER BY a.revision DESC LIMIT 1),'restore') != 'hide' ORDER BY e.seq DESC LIMIT 1`).get(participantId) as {stroke_id:string}|undefined;
       if (!row) { reply({ok:false,code:'EMPTY'}); return; }
+      // Keep one shared pause after the reconstruction, even when participants alternate.
+      nextUndoRebuildAt = Infinity;
       try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); resetCanvas(); reply({ok:true}); }
       catch(error) { app.log.error(error,'undo failed'); if(!store.healthy)io.disconnectSockets(true); reply({ok:false,code:'UNAVAILABLE'}); }
+      finally { nextUndoRebuildAt = performance.now() + UNDO_REBUILD_PAUSE_MS; }
     });
     socket.on('draw:submit',(input:unknown,ack:unknown) => {
       if (typeof ack !== 'function') return;
