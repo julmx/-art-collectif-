@@ -1,1 +1,131 @@
-<!doctype html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Administration — Art Collectif</title></head><body><main id="admin"></main><script type="module" src="/src/admin.ts"></script></body></html>
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Administration — Art Collectif</title>
+</head>
+<body>
+  <a class="skip" href="#main">Aller au contenu</a>
+  <div id="admin">
+    <header class="masthead">
+      <a class="brand" href="/"><span aria-hidden="true">✳</span> ART COLLECTIF</a>
+      <a class="public-link" href="/">Voir la toile publique <span aria-hidden="true">↗</span></a>
+    </header>
+    <main id="main" tabindex="-1">
+      <p id="message" role="status"></p>
+      <div id="loading">Chargement de l’administration…</div>
+      <div id="login-view" hidden>
+        <div class="login-art artwork" aria-hidden="true"></div>
+        <form id="login" class="login-form">
+          <p class="kicker">Administration</p>
+          <h1>Connexion</h1>
+          <label>Mot de passe<input name="password" type="password" required autocomplete="current-password"></label>
+          <button class="primary">Se connecter <span aria-hidden="true">→</span></button>
+        </form>
+      </div>
+      <div id="controls" hidden>
+        <aside class="sidebar">
+          <p class="kicker">Administration</p>
+          <nav aria-label="Administration">
+            <a href="#ensemble"><span class="nav-icon overview-icon" aria-hidden="true"></span>Vue d’ensemble</a>
+            <a href="#configuration"><span class="nav-icon config-icon" aria-hidden="true"></span>Configuration</a>
+            <a href="#moderation"><span class="nav-icon mod-icon" aria-hidden="true"></span>Modération</a>
+            <a href="#exports"><span class="nav-icon export-icon" aria-hidden="true">↓</span>Exports</a>
+          </nav>
+          <button id="logout" class="text-button">Se déconnecter</button>
+        </aside>
+        <div class="views">
+          <section id="ensemble" class="view" aria-labelledby="ensemble-title">
+            <h1 id="ensemble-title" tabindex="-1">Vue d’ensemble</h1>
+            <article class="project-card">
+              <div class="project-main">
+                <div class="project-copy"><p class="kicker">Projet actuel</p><h2 id="project-name"></h2><span id="project-status" class="badge"></span></div>
+                <div class="artwork project-art" aria-hidden="true"></div>
+              </div>
+              <div class="metrics">
+                <div><span>Format de la toile</span><strong>720 × 480 px</strong></div>
+                <div><span>Palette</span><strong>24 couleurs</strong></div>
+                <div><span id="project-date-label">Ouverture</span><strong id="project-date"></strong></div>
+              </div>
+            </article>
+            <article class="card lifecycle"><h2>Participation</h2>
+              <p id="status-help"></p>
+              <div id="setup" hidden><ul id="setup-list"></ul><a href="#configuration">Configurer le projet →</a></div>
+              <div class="actions"><button data-status="open" class="primary">Ouvrir le projet</button><button data-status="paused" class="primary">Suspendre</button><button data-status="closed" class="danger">Clôturer</button></div>
+            </article>
+            <div class="shortcuts">
+              <a href="#moderation"><span><strong>Modérer la toile</strong><small>Sélection et vérification des traits</small></span><b aria-hidden="true">→</b></a>
+              <a href="#exports"><span><strong>Exporter l’œuvre</strong><small>Images, vidéos et archives</small></span><b aria-hidden="true">→</b></a>
+            </div>
+          </section>
+          <section id="configuration" class="view" hidden aria-labelledby="config-title">
+            <h1 id="config-title" tabindex="-1">Configuration</h1>
+            <article class="card"><h2>Fond de la toile</h2><p id="base-help"></p>
+              <form id="base"><label>Fichier PNG<input type="file" name="image" accept="image/png" required aria-describedby="base-help"></label><button>Importer le fond</button></form>
+            </article>
+            <form id="config" class="card"><h2>Informations du projet</h2>
+              <label>Titre<input name="title" maxlength="160" required></label>
+              <label>Présentation<textarea name="description" maxlength="4000"></textarea></label>
+              <label>Conditions de participation<textarea name="terms" required maxlength="20000"></textarea></label>
+              <div class="subsection"><h2>Palette</h2>
+                <div id="palette-preview" class="admin-palette" aria-label="Aperçu de la palette"></div>
+                <label>Codes hexadécimaux<textarea name="palette" required aria-describedby="palette-feedback"></textarea></label>
+                <p id="palette-feedback" role="status"></p>
+              </div>
+              <button class="primary">Enregistrer la configuration</button>
+            </form>
+          </section>
+          <section id="moderation" class="view" hidden aria-labelledby="moderation-title">
+            <h1 id="moderation-title" tabindex="-1">Historique et modération</h1>
+            <div id="visual-moderation"></div>
+            <details id="technical" class="card"><summary>Historique technique</summary>
+              <button id="history">Actualiser l’historique</button><div id="events"></div>
+              <p id="history-info" role="status"></p><button id="history-next" hidden>Charger la suite</button>
+            </details>
+          </section>
+          <section id="exports" class="view" hidden aria-labelledby="exports-title">
+            <h1 id="exports-title" tabindex="-1">Exports privés</h1>
+            <div class="export-forms">
+              <form id="create-archive" class="card"><h2>Archive ZIP</h2>
+                <label>Version<select name="moderation"><option value="moderated">Modérée</option><option value="raw">Brute</option></select></label>
+                <label class="check"><input type="checkbox" name="includeVideos"> Inclure les quatre vidéos (opération longue)</label>
+                <button class="primary">Créer l’archive</button>
+              </form>
+              <form id="create-video" class="card"><h2>Vidéo MP4</h2>
+                <label>Déroulement<select name="mode"><option value="activity">Selon les contributions</option><option value="chronological">Selon le temps écoulé</option></select></label>
+                <label>Version<select name="moderation"><option value="moderated">Modérée</option><option value="raw">Brute</option></select></label>
+                <div class="pair"><label>Durée (s)<input name="duration" type="number" min="1" max="600" value="30" required></label><label>Images par seconde<input name="fps" type="number" min="1" max="30" value="25" required aria-describedby="frames"></label></div>
+                <p id="frames" role="status"></p>
+                <label>Agrandissement<select name="scale"><option value="1">1 × (720 × 480)</option><option value="2">2 × (1440 × 960)</option><option value="3">3 × (2160 × 1440)</option></select></label>
+                <button class="primary">Créer la vidéo</button>
+              </form>
+            </div>
+            <article class="card"><div class="card-head"><h2>Fichiers créés</h2><button id="refresh-exports">Actualiser</button></div>
+              <p id="export-progress" role="status"></p><div id="generated-list" class="generated-list"></div>
+              <button id="archives" class="text-button">Lister les anciennes archives</button><div id="archive-list" class="admin-links"></div>
+            </article>
+            <article class="card"><h2>Téléchargements directs</h2><div class="admin-links">
+              <a download href="/api/admin/export/final.png?moderation=moderated">Image modérée · PNG</a><a download href="/api/admin/export/final.png?moderation=raw">Image brute · PNG</a><a download href="/api/admin/export/overlay.png">Calque transparent · PNG</a><a download href="/api/admin/export/events.jsonl">Contributions · JSONL</a><a download href="/api/admin/export/moderation.jsonl">Modération · JSONL</a>
+            </div></article>
+            <details class="card"><summary>Reconstituer une image</summary><form id="replay">
+              <label>Moment de la capture<select name="moment"><option value="">État actuel</option><option value="seq">À une séquence</option><option value="at">À une date</option></select></label>
+              <label hidden>Séquence<input name="seq" type="number" min="0" disabled required></label><label hidden>Date et heure locales<input name="at" type="datetime-local" disabled required></label>
+              <div class="pair"><label>Agrandissement entier<input name="scale" type="number" min="1" max="8" value="1" required></label><label>Version<select name="mode"><option value="moderated">Modérée</option><option value="raw">Brute</option></select></label></div>
+              <button>Afficher l’image</button></form><img id="replay-image" alt="Reconstitution privée" hidden>
+            </details>
+          </section>
+        </div>
+      </div>
+    </main>
+    <dialog id="close-dialog" aria-labelledby="close-title" aria-describedby="close-explanation">
+      <h2 id="close-title">Clôturer définitivement le projet ?</h2>
+      <p id="close-explanation">La clôture est irréversible. Les contributions s’arrêteront. L’œuvre restera consultable et les exports disponibles.</p>
+      <label>Pour confirmer, saisissez CLOTURER<input id="close-confirmation" type="text" autocomplete="off" spellcheck="false"></label>
+      <p id="close-error" role="alert"></p>
+      <div class="actions"><button id="cancel-close" type="button">Annuler</button><button id="confirm-close" type="button" class="danger" disabled>Clôturer définitivement</button></div>
+    </dialog>
+  </div>
+  <script type="module" src="/src/admin.ts"></script>
+</body>
+</html>
