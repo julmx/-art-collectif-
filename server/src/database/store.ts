@@ -74,16 +74,16 @@ export class Store {
     for (const d of overrides) { const key=JSON.stringify([d.participantId,d.strokeId]); if (d.action==='hide') hidden.add(key); else hidden.delete(key); }
     return hidden;
   }
-  replayInto(grid: Uint8Array, after: number, target: number, hidden: ReadonlySet<string>): void {
+  replayInto(grid: Uint8Array, after: number, target: number, isHidden: (participantId:string, strokeId:string) => boolean): void {
     for (const row of this.db.prepare('SELECT seq,participant_id,command_json,created_at FROM draw_events WHERE seq>? AND seq<=? ORDER BY seq').iterate(after,target) as IterableIterator<EventRow>) {
       const c=JSON.parse(row.command_json) as DrawCommand;
-      if (!hidden.has(JSON.stringify([row.participant_id,c.strokeId]))) applyCells(grid,paintBrush(c.points,c.size,c.colorId));
+      if (!isHidden(row.participant_id,c.strokeId)) applyCells(grid,paintBrush(c.points,c.size,c.colorId));
     }
   }
   replay(target:number, mode:'raw'|'moderated', revision:number, snapshot?:{seq:number;grid:Uint8Array}, overrides?:StrokeDecision[]): Uint8Array {
     const grid = snapshot ? snapshot.grid.slice() : new Uint8Array(WIDTH * HEIGHT);
     const hidden = mode === 'moderated' ? this.hiddenStrokes(revision, overrides) : new Set<string>();
-    this.replayInto(grid, snapshot?.seq ?? 0, target, hidden);
+    this.replayInto(grid, snapshot?.seq ?? 0, target, (participantId,strokeId) => hidden.has(JSON.stringify([participantId,strokeId])));
     return grid;
   }
   rebuild() { this.seq = Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq); this.grid=this.replay(this.seq,'moderated',this.revision()); }

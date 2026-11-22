@@ -2,7 +2,7 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {applyModeration} from '../server/src/admin/moderation-apply';
 import {Store} from '../server/src/database/store';
 import {WIDTH} from '../shared/raster';
@@ -37,7 +37,9 @@ it('masque le trait ciblé et rejoue les dessins acceptés pendant la reconstruc
     const target = draw('alice', 1, 0);
     const pending = applyModeration(store, path, [target], 'hide', 'annulation', store.seq, store.revision());
     for (let x = 1; x < 40; x++) draw('bob', 2, x);
+    const history = vi.spyOn(store, 'hiddenStrokes');
     await expect(pending).resolves.toBe(1);
+    expect(history).not.toHaveBeenCalled();
     expect(store.seq).toBe(40);
     expect(store.grid[WIDTH]).toBe(0);
     expect(store.grid[WIDTH + 39]).toBe(2);
@@ -58,3 +60,16 @@ it('refuse de publier une reconstruction faite sur une ancienne révision de mod
     expect(store.grid[WIDTH + 1]).toBe(0);
   } finally { close(); }
 }, 15000);
+
+it('publie la grille du processus sans relire la visibilité si aucun dessin n’est arrivé', async () => {
+  const {store, path, draw, close} = setup();
+  try {
+    const target = draw('alice', 1, 0);
+    const history = vi.spyOn(store, 'hiddenStrokes');
+    const replay = vi.spyOn(store, 'replayInto');
+    await applyModeration(store, path, [target], 'hide', 'test', store.seq, store.revision());
+    expect(history).not.toHaveBeenCalled();
+    expect(replay).not.toHaveBeenCalled();
+    expect(store.grid[WIDTH]).toBe(0);
+  } finally { close(); }
+});
