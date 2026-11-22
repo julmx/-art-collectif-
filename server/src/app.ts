@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
+import { ServerResponse } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Store } from './database/store';
@@ -79,7 +80,24 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   // Per-participant token bucket: burst 40, sustained 20 commands per second.
   const buckets = new Map<string,{tokens:number; time:number}>();
   io.on('connection', socket => {
-    socket.data.queuedBytes=0;socket.conn.on('drain',()=>{socket.data.queuedBytes=0;});
+    socket.data.queuedBytes = 0;
+    let inFlightBytes = 0;
+    socket.conn.on('flush', () => {
+      const bytes = socket.data.queuedBytes - inFlightBytes;
+      if (!bytes) return;
+      inFlightBytes += bytes;
+      const release = () => {
+        inFlightBytes -= bytes;
+        socket.data.queuedBytes -= bytes;
+      };
+      const transport = socket.conn.transport;
+      // Polling can emit drain immediately after res.end(), before HTTP finishes writing.
+      if (transport.name === 'polling' && 'res' in transport && transport.res instanceof ServerResponse) {
+        transport.res.once('finish', release);
+      } else {
+        transport.once('drain', release);
+      }
+    });
     socket.emit('participant:restriction',{banned:store.isBanned(socket.data.participantId as string)});
     sendState(socket);
     let lastResyncAt = -Infinity;

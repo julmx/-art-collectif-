@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,7 +69,7 @@ it('regroupe les resynchronisations et déconnecte un transport dont la file res
     store.db.prepare("UPDATE project SET status='open'").run();
     for (let i = 0; i < 2; i++) {
       const session = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
-      const socket = client(`http://127.0.0.1:${address.port}`, {extraHeaders:{cookie:session.headers['set-cookie'] as string, origin}, transports:['websocket'], autoConnect:false});
+      const socket = client(`http://127.0.0.1:${address.port}`, {extraHeaders:{cookie:session.headers['set-cookie'] as string, origin}, transports:[i === 0 ? 'websocket' : 'polling'], autoConnect:false});
       sockets.push(socket);
       const ready = new Promise<void>(resolve => socket.once('canvas:state', resolve));
       socket.connect();
@@ -78,10 +78,15 @@ it('regroupe les resynchronisations et déconnecte un transport dont la file res
 
     const [slow, normal] = sockets;
     const peer = io.sockets.sockets.get(slow.id!)!;
-    peer.conn.transport.writable = false;
+    const transport = peer.conn.transport;
+    // Hold the first batch after Engine.IO has handed it to the transport.
+    const send = vi.spyOn(transport, 'send').mockImplementationOnce(() => {
+      transport.writable = false;
+    });
     spam = setInterval(() => slow.emit('canvas:resync'), 20);
     await delay(200);
     expect(io.sockets.sockets.has(peer.id)).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
     expect(peer.data.queuedBytes).toBeGreaterThan(0);
     expect(peer.data.queuedBytes).toBeLessThan(2 * 1024 * 1024);
 
@@ -89,11 +94,18 @@ it('regroupe les resynchronisations et déconnecte un transport dont la file res
       opId:randomUUID(), strokeId:randomUUID(), partIndex:0, final:true, tool:'pixel', colorId:1, size:1, points:[[2,2]],
     });
     expect(ack).toMatchObject({accepted:true, seq:1});
+    const bytesWithStateAndDraw = peer.data.queuedBytes;
+    // Completing the first write releases its state, while the newer draw is still queued.
+    transport.emit('drain');
+    expect(peer.data.queuedBytes).toBeGreaterThan(0);
+    expect(peer.data.queuedBytes).toBeLessThan(bytesWithStateAndDraw);
     await expect.poll(() => io.sockets.sockets.has(peer.id), {timeout:6000}).toBe(false);
 
     const state = new Promise<{seq:number}>(resolve => normal.once('canvas:state', resolve));
     normal.emit('canvas:resync');
     expect(await state).toMatchObject({seq:1});
+    const normalPeer = io.sockets.sockets.get(normal.id!)!;
+    await expect.poll(() => normalPeer.data.queuedBytes).toBe(0);
   } finally {
     clearInterval(spam);
     sockets.forEach(socket => socket.disconnect());
