@@ -1,57 +1,258 @@
-import { PALETTE, validPalette } from '../../shared/palette';
-import './style.css';
-import {initModeration} from './moderation';
-const root=document.querySelector<HTMLElement>('#admin')!;
-root.innerHTML=`<header><a class="brand" href="/">✳ ART COLLECTIF</a><span>ADMINISTRATION PRIVÉE</span></header><section class="admin-content"><h1>Administration</h1><p id="message" role="status"></p><form id="login"><h2>Connexion</h2><label>Mot de passe <input name="password" type="password" required autocomplete="current-password"></label><button>Se connecter</button></form><div id="controls" hidden><button id="logout">Se déconnecter</button><section><details id="config-details" open><summary>Configuration du projet</summary><p>Le fond doit être un PNG opaque 720 × 480 en niveaux de gris. Les paramètres graphiques sont figés à l’ouverture.</p><form id="base"><label>Fond PNG <input type="file" name="image" accept="image/png" required></label><button>Importer le fond</button></form><form id="config"><label>Titre <input name="title" maxlength="160" value="Art Collectif" required></label><label>Présentation <textarea name="description" maxlength="4000"></textarea></label><label>Conditions de participation <textarea name="terms" required maxlength="20000"></textarea></label><label>Palette : 24 couleurs hexadécimales, séparées par des virgules ou des espaces<textarea name="palette" required></textarea></label><div id="palette-preview" class="admin-palette" aria-label="Aperçu de la palette"></div><p id="palette-feedback" role="status"></p><button>Enregistrer la configuration</button></form></details></section><section><h2>Cycle de vie</h2><p>État actuel : <strong id="project-status">Chargement…</strong></p><p>La clôture est définitive.</p><div class="admin-actions"><button data-status="open">Ouvrir / reprendre</button><button data-status="paused">Suspendre</button><button data-status="closed">Clôturer</button></div><dialog id="close-dialog" aria-labelledby="close-title" aria-describedby="close-explanation"><h2 id="close-title">Clôturer définitivement le projet ?</h2><p id="close-explanation">La clôture est irréversible : plus aucune nouvelle contribution ne sera acceptée. L’œuvre restera consultable et les exports disponibles.</p><label for="close-confirmation">Pour confirmer, saisissez CLOTURER</label><input id="close-confirmation" type="text" autocomplete="off" spellcheck="false"><div class="admin-actions close-actions"><button id="cancel-close" type="button">Annuler</button><button id="confirm-close" type="button" disabled>Clôturer définitivement</button></div></dialog></section><section><h2>Historique et modération</h2><div id="visual-moderation"></div><details><summary>Historique technique</summary><button id="history">Actualiser l’historique</button><button id="history-next">Page suivante</button><div id="events"></div></details></section><section><h2>Exports privés</h2><h3>Créer une archive ZIP</h3><form id="create-archive"><label>Version <select name="moderation"><option value="moderated">Modérée</option><option value="raw">Brute</option></select></label><label><span><input type="checkbox" name="includeVideos"> Inclure les quatre vidéos (opération longue)</span></label><button>Créer l’archive</button></form><h3>Créer une vidéo</h3><form id="create-video"><label>Déroulement <select name="mode"><option value="activity">Selon les contributions</option><option value="chronological">Selon le temps écoulé</option></select></label><label>Version <select name="moderation"><option value="moderated">Modérée</option><option value="raw">Brute</option></select></label><label>Durée en secondes <input name="duration" type="number" min="1" max="600" value="30" required></label><label>Images par seconde <input name="fps" type="number" min="1" max="30" value="25" required></label><label>Agrandissement <select name="scale"><option value="1">1 × (720 × 480)</option><option value="2">2 × (1440 × 960)</option><option value="3">3 × (2160 × 1440)</option></select></label><button>Créer la vidéo</button></form><p id="export-progress" role="status"></p><button id="refresh-exports" type="button">Actualiser les fichiers créés</button><div id="generated-list" class="generated-list" aria-label="Fichiers créés"></div><button id="archives">Lister les anciennes archives</button><div id="archive-list" class="admin-links"></div><div class="admin-links"><a href="/api/admin/export/final.png?moderation=moderated">Image modérée</a><a href="/api/admin/export/final.png?moderation=raw">Image brute</a><a href="/api/admin/export/overlay.png">Calque transparent</a><a href="/api/admin/export/events.jsonl">Contributions JSONL</a><a href="/api/admin/export/moderation.jsonl">Modération JSONL</a></div><form id="replay"><label>Séquence <input name="seq" type="number" min="0"></label><label>Ou date et heure locales <input name="at" type="datetime-local"></label><label>Agrandissement entier <input name="scale" type="number" min="1" max="8" value="1"></label><label>Mode <select name="mode"><option value="moderated">Modéré</option><option value="raw">Brut</option></select></label><button>Afficher l’image</button></form><img id="replay-image" alt="Reconstitution privée" hidden></section></div></section>`;
-const el=<T extends HTMLElement>(selector:string)=>document.querySelector<T>(selector)!;
-const message=el<HTMLElement>('#message'), login=el<HTMLFormElement>('#login'), controls=el<HTMLElement>('#controls');
-function tell(text:string) {message.textContent=text;}
-async function request(path:string,init:RequestInit={}) {const response=await fetch(path,{...init,credentials:'same-origin'});if(!response.ok){const result=await response.json().catch(()=>({}));const messages:Record<string,string>={INVALID_PNG:'Le fichier ne peut pas être lu comme une image PNG valide.',PNG_DIMENSIONS:'Le fond doit mesurer exactement 720 × 480 pixels.',PNG_TRANSPARENT:'Le fond doit être entièrement opaque, sans transparence.',PNG_NOT_GRAYSCALE:'Le fond doit être en niveaux de gris, sans pixels colorés.',FST_ERR_CTP_BODY_TOO_LARGE:path==='/api/admin/base-image'?'Le fichier dépasse la taille maximale de 5 Mio.':'La configuration dépasse la taille maximale autorisée.',MODERATION_STATE_CHANGED:'La toile a changé pendant la reconstruction. Actualisez l’aperçu puis réessayez.',MODERATION_BUSY:'Une décision de modération est déjà en cours.',INVALID_TRANSITION:'Cette action n’est plus disponible pour l’état actuel du projet. Actualisez la page.',PROJECT_LOCKED:'Le fond et la palette sont figés après l’ouverture.',PROJECT_NOT_CONFIGURED:'Importez le fond et renseignez une palette et des conditions valides avant l’ouverture.',INVALID_CONFIG:'Vérifiez le titre, la présentation, les conditions et la palette.',RATE_LIMITED:'Trop de tentatives. Réessayez dans quinze minutes.',EXPORT_JOB_BUSY:'Une génération est déjà en cours.',BASE_IMAGE_MISSING:'Importez d’abord le fond.',PROJECT_NOT_STARTED:'Ouvrez le projet avant de créer une vidéo chronologique.',INVALID_EXPORT:'Vérifiez les paramètres : 9 000 images maximum.'};throw new Error(messages[result.error] || (response.status>=500?'Erreur du serveur : consultez les journaux de l’application.':result.error) || `Erreur ${response.status}`);}return response;}
-function json(body:unknown):RequestInit{return {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)};}
-function form(selector:string,handler:(data:FormData)=>Promise<void>) {el<HTMLFormElement>(selector).addEventListener('submit',e=>{e.preventDefault();handler(new FormData(e.currentTarget as HTMLFormElement)).catch(err=>tell(err.message));});}
-function loggedIn(value:boolean) {login.hidden=value;controls.hidden=!value;if(value) { refreshModeration(); void refreshGenerated().catch(()=>{}); } if(value) request('/api/admin/config').then(r=>r.json()).then(p=>{el<HTMLInputElement>('[name=title]').value=p.title;el<HTMLTextAreaElement>('[name=description]').value=p.description;el<HTMLTextAreaElement>('[name=terms]').value=p.participationTerms;el<HTMLTextAreaElement>('[name=palette]').value=p.palette.join(', ');updatePalettePreview();setStatus(p.status);}).catch(err=>tell(err.message));}
-function setStatus(status:string) { const labels:Record<string,string>={draft:'Brouillon',open:'Ouvert',paused:'Suspendu',closed:'Clôturé'}; el('#project-status').textContent=labels[status] || status; el<HTMLDetailsElement>('#config-details').open=status==='draft'; const allowed:Record<string,string[]>={draft:['open'],open:['paused','closed'],paused:['open','closed'],closed:[]}; document.querySelectorAll<HTMLButtonElement>('[data-status]').forEach(button=>{button.disabled=!(allowed[status] || []).includes(button.dataset.status || '');}); el<HTMLInputElement>('#base input').disabled=status!=='draft'; el<HTMLButtonElement>('#base button').disabled=status!=='draft'; el<HTMLTextAreaElement>('[name=palette]').readOnly=status!=='draft'; }
-const paletteInput=el<HTMLTextAreaElement>('[name=palette]');
-function updatePalettePreview(){const colors=paletteInput.value.split(/[\s,;]+/).filter(Boolean),preview=el<HTMLElement>('#palette-preview');preview.replaceChildren();for(const color of colors){if(!/^#[0-9a-f]{6}$/i.test(color))continue;const swatch=document.createElement('span');swatch.style.background=color;swatch.title=color;preview.append(swatch);}el('#palette-feedback').textContent=validPalette(colors)?'Palette valide : 24 couleurs chromatiques distinctes.':'Saisissez 24 couleurs distinctes, au format #RRGGBB et suffisamment chromatiques.';}
-paletteInput.value=PALETTE.join(', ');paletteInput.addEventListener('input',updatePalettePreview);updatePalettePreview();
-form('#login',async d=>{await request('/api/admin/login',json({password:d.get('password')}));login.reset();loggedIn(true);tell('Connexion établie.');});
-el('#logout').addEventListener('click',()=>{request('/api/admin/logout',json({})).then(()=>{loggedIn(false);tell('Déconnecté.');}).catch(err=>tell(err.message));});
-form('#base',async d=>{const file=d.get('image');if(!(file instanceof File)) return;await request('/api/admin/base-image',{method:'POST',headers:{'content-type':'image/png'},body:file});tell('Fond importé et vérifié.');});
-form('#config',async d=>{const body={title:d.get('title'),description:d.get('description'),participationTerms:d.get('terms'),palette:paletteInput.value.split(/[\s,;]+/).filter(Boolean)};await request('/api/admin/config',{...json(body),method:'PUT'});tell('Configuration enregistrée.');});
-const closeDialog=el<HTMLDialogElement>('#close-dialog'),closeInput=el<HTMLInputElement>('#close-confirmation'),closeButton=el<HTMLButtonElement>('#confirm-close'),cancelClose=el<HTMLButtonElement>('#cancel-close');
-let closing=false;closeDialog.addEventListener('cancel',event=>{if(closing)event.preventDefault();});
-closeInput.addEventListener('input',()=>{closeButton.disabled=closeInput.value!=='CLOTURER';});
-cancelClose.addEventListener('click',()=>closeDialog.close());
-closeDialog.addEventListener('close',()=>{closeInput.value='';closeButton.disabled=true;});
-closeButton.addEventListener('click',async()=>{if(closeInput.value!=='CLOTURER')return;closing=true;closeInput.disabled=true;closeButton.disabled=true;cancelClose.disabled=true;try{await request('/api/admin/status',json({status:'closed',confirmation:closeInput.value}));closeDialog.close();setStatus('closed');tell('Le projet est définitivement clôturé.');}catch(err){tell(err instanceof Error?err.message:'La clôture a échoué.');closeButton.disabled=closeInput.value!=='CLOTURER';}finally{closing=false;closeInput.disabled=false;cancelClose.disabled=false;}});
-document.querySelectorAll<HTMLButtonElement>('[data-status]').forEach(button=>button.addEventListener('click',()=>{const status=button.dataset.status;if(status==='closed'){closeInput.value='';closeButton.disabled=true;closeDialog.showModal();cancelClose.focus();return;}request('/api/admin/status',json({status})).then(()=>{setStatus(status!);tell('État du projet mis à jour.');}).catch(err=>tell(err.message));}));
-let after=0;function loadHistory(reset:boolean) {if(reset)after=0;request(`/api/admin/events?limit=100&after=${after}`).then(r=>r.json()).then(data=>{const list=el<HTMLElement>('#events');list.replaceChildren();for(const event of data.events){const row=document.createElement('pre');row.textContent=`#${event.seq} · ${event.created_at}\nParticipant : ${event.participant_id}\n${event.command_json}`;list.append(row);after=event.seq;}if(!data.events.length)tell('Aucune contribution supplémentaire.');}).catch(err=>tell(err.message));}
-el('#history').addEventListener('click',()=>loadHistory(true));el('#history-next').addEventListener('click',()=>loadHistory(false));
-form('#replay',async d=>{const q=new URLSearchParams({moderation:String(d.get('mode'))}); const seq=String(d.get('seq')||''), at=String(d.get('at')||'');if(seq && at)throw new Error('Choisir une date ou une séquence.');if(seq)q.set('seq',seq);if(at)q.set('at',new Date(at).toISOString());q.set('scale',String(d.get('scale')||'1'));const image=el<HTMLImageElement>('#replay-image'); image.src=`/api/admin/image.png?${q}`;image.hidden=false;});
-const refreshModeration=initModeration(request);
-request('/api/admin/events?limit=1').then(()=>loggedIn(true)).catch(()=>loggedIn(false));
+import { validPalette } from '../../shared/palette';
+import { initModeration } from './moderation';
+import { initExports } from './admin-exports';
+import './admin.css';
 
-el('#archives').addEventListener('click',()=>{request('/api/admin/archives').then(r=>r.json()).then(data=>{const list=el<HTMLElement>('#archive-list');list.replaceChildren();for(const item of data.archives){const a=document.createElement('a');a.href=`/api/admin/archives/${encodeURIComponent(item.id)}`;a.textContent=item.id;list.append(a);}}).catch(err=>tell(err.message));});
+const el = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+const controls = el('#controls');
+const message = el('#message');
+const palette = el<HTMLTextAreaElement>('[name=palette]');
+const login = el<HTMLFormElement>('#login');
+const closeDialog = el<HTMLDialogElement>('#close-dialog');
+const closeInput = el<HTMLInputElement>('#close-confirmation');
+const confirmClose = el<HTMLButtonElement>('#confirm-close');
+const cancelClose = el<HTMLButtonElement>('#cancel-close');
 
-let exportTimer:ReturnType<typeof setTimeout>|undefined,exportRefresh=0;
-async function refreshGenerated(){
-  const current=++exportRefresh;
-  const [jobsResult,filesResult]=await Promise.all([request('/api/admin/export-jobs').then(r=>r.json()),request('/api/admin/generated').then(r=>r.json())]);
-  if(current!==exportRefresh)return;
-  const progress=el<HTMLElement>('#export-progress'),list=el<HTMLElement>('#generated-list');list.replaceChildren();
-  type ExportItem={file:string;kind:'video'|'archive';date:string;dateKind:'created'|'modified';size:number;metadata:null|{captureCompletedAt?:string;sequence?:number;mode?:string;moderation?:string;duration?:number;fps?:number;scale?:number;includeVideos?:boolean}};
-  const formatDate=(value:string)=>new Intl.DateTimeFormat('fr-FR',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
-  for(const item of filesResult.items as ExportItem[]){
-    const row=document.createElement('article'),heading=document.createElement('div'),title=document.createElement('strong'),date=document.createElement('p'),details=document.createElement('p'),capture=document.createElement('p'),link=document.createElement('a');
-    row.className='generated-item';heading.className='generated-info';title.textContent=item.kind==='video'?'Vidéo':'Archive ZIP';date.textContent=`${item.dateKind==='created'?'Créée':'Fichier modifié'} le ${formatDate(item.date)}`;date.className='generated-date';
-    const m=item.metadata,parts:string[]=[];if(m?.moderation)parts.push(m.moderation==='moderated'?'Modérée':'Brute');if(item.kind==='video'&&m?.mode)parts.push(m.mode==='chronological'?'Temps écoulé':'Contributions');if(item.kind==='video'&&typeof m?.duration==='number')parts.push(`${m.duration} s`);if(item.kind==='video'&&typeof m?.fps==='number')parts.push(`${m.fps} images/s`);if(item.kind==='video'&&typeof m?.scale==='number')parts.push(`${m.scale} ×`);if(item.kind==='archive'&&typeof m?.includeVideos==='boolean')parts.push(m.includeVideos?'Avec vidéos':'Sans vidéos');
-    details.textContent=parts.join(' · ');details.className='generated-details';capture.className='generated-capture';capture.textContent=m?.captureCompletedAt&&typeof m.sequence==='number'?`Capture terminée le ${formatDate(m.captureCompletedAt)} · jusqu’à la contribution n° ${m.sequence}`:'Date et contenu de la capture indisponibles pour cet ancien fichier.';
-    heading.append(title,date);if(parts.length)heading.append(details);heading.append(capture);link.href=`/api/admin/generated/${encodeURIComponent(item.file)}`;link.textContent='Télécharger';link.className='generated-download';link.download=item.file;row.append(heading,link);list.append(row);
-  }
-  const running=jobsResult.jobs.find((job:{status:string})=>job.status==='running'),latest=jobsResult.jobs[0];
-  progress.textContent=running?'Génération en cours. Vous pouvez continuer à dessiner.':latest?.status==='failed'?latest.error:latest?.status==='done'?'Génération terminée : le fichier est disponible ci-dessous.':filesResult.files.length?'Fichiers disponibles :':'Aucun fichier généré.';
-  if(exportTimer)clearTimeout(exportTimer);if(running)exportTimer=setTimeout(()=>{refreshGenerated().catch(err=>tell(err.message));},3000);
+type Status = 'draft' | 'open' | 'paused' | 'closed';
+interface Project {
+  title: string; description: string; participationTerms: string; palette: string[];
+  status: Status; hasBaseImage: boolean; startedAt: string | null; closedAt: string | null;
 }
-form('#create-archive',async d=>{await request('/api/admin/export-jobs',json({kind:'archive',moderation:d.get('moderation'),includeVideos:d.has('includeVideos')}));tell('Création de l’archive lancée.');await refreshGenerated();});
-form('#create-video',async d=>{await request('/api/admin/export-jobs',json({kind:'video',moderation:d.get('moderation'),mode:d.get('mode'),duration:Number(d.get('duration')),fps:Number(d.get('fps')),scale:Number(d.get('scale'))}));tell('Création de la vidéo lancée.');await refreshGenerated();});
-el('#refresh-exports').addEventListener('click',()=>{refreshGenerated().catch(err=>tell(err.message));});
+let project: Project | undefined;
+let feedbackTimer: ReturnType<typeof setTimeout>;
+function tell(text: string, error = false) {
+  clearTimeout(feedbackTimer);
+  message.textContent = text;
+  message.dataset.error = String(error);
+  if (!error) feedbackTimer = setTimeout(() => { message.textContent = ''; }, 5000);
+}
+const errors: Record<string, string> = {
+  INVALID_CREDENTIALS: 'Mot de passe incorrect.',
+  UNAUTHENTICATED: 'Votre session a expiré. Reconnectez-vous.',
+  INVALID_PNG: 'Le fichier doit être une image PNG valide.',
+  PNG_DIMENSIONS: 'Le fond doit mesurer exactement 720 × 480 pixels.',
+  PNG_TRANSPARENT: 'Le fond doit être entièrement opaque.',
+  PNG_NOT_GRAYSCALE: 'Le fond doit être en niveaux de gris.',
+  MODERATION_STATE_CHANGED: 'La toile a changé. Actualisez l’aperçu puis réessayez.',
+  MODERATION_BUSY: 'Une décision de modération est déjà en cours.',
+  INVALID_TRANSITION: 'L’état du projet a changé. Rechargez la page.',
+  PROJECT_LOCKED: 'Le fond et la palette sont figés après l’ouverture.',
+  PROJECT_NOT_CONFIGURED: 'Importez le fond et enregistrez la palette et les conditions avant l’ouverture.',
+  INVALID_CONFIG: 'Vérifiez le titre, les conditions et la palette.',
+  RATE_LIMITED: 'Trop de tentatives. Réessayez dans quinze minutes.',
+  EXPORT_JOB_BUSY: 'Une génération est déjà en cours.',
+  EXPORT_BUSY: 'Le serveur prépare déjà des exports. Réessayez dans un instant.',
+  BASE_IMAGE_MISSING: 'Importez le fond dans Configuration pour afficher la toile.',
+  PROJECT_NOT_STARTED: 'Ouvrez le projet avant de créer une vidéo chronologique.',
+  INVALID_EXPORT: 'Vérifiez les paramètres vidéo (9 000 images maximum).',
+  INVALID_QUERY: 'Vérifiez la séquence ou la date demandée.',
+};
+async function request(path: string, init: RequestInit = {}) {
+  const response = await fetch(path, { ...init, credentials: 'same-origin' });
+  if (response.ok) return response;
+  const { error } = await response.json().catch(() => ({}));
+  if (error === 'UNAUTHENTICATED' && project) location.reload();
+  if (response.status === 413) throw new Error(path.endsWith('base-image') ? 'Le fond dépasse 5 Mio.' : 'La configuration est trop volumineuse.');
+  throw new Error(errors[error] || (response.status >= 500 ? 'Le serveur a rencontré une erreur. Réessayez.' : 'Cette opération a échoué.'));
+}
+function json(body: unknown): RequestInit {
+  return { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+}
+function form(selector: string, handler: (data: FormData) => Promise<void>) {
+  const target = el<HTMLFormElement>(selector);
+  target.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (target.getAttribute('aria-busy') === 'true') return;
+    target.setAttribute('aria-busy', 'true');
+    try { await handler(new FormData(target)); }
+    catch (error) { tell(error instanceof Error ? error.message : 'Opération impossible.', true); }
+    finally { target.removeAttribute('aria-busy'); }
+  });
+}
+const refreshModeration = initModeration(request);
+const refreshExports = initExports(request, form, json, tell);
+let moderationLoaded = false;
+const views = [...document.querySelectorAll<HTMLElement>('.view')];
+function navigate(focus: boolean) {
+  if (!project) return;
+  const view = views.find(item => '#' + item.id === location.hash) ?? views[0];
+  for (const item of views) item.hidden = item !== view;
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('nav a')) {
+    if (link.hash === '#' + view.id) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  const title = view.querySelector('h1')!;
+  document.title = title.textContent + ' — Administration · Art Collectif';
+  if (focus) {
+    title.focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+  }
+  if (view.id === 'moderation' && !moderationLoaded) {
+    moderationLoaded = true;
+    refreshModeration();
+  }
+  if (view.id === 'exports') void refreshExports().catch(error => tell(error.message, true));
+}
+window.addEventListener('hashchange', () => navigate(true));
+el('.skip').addEventListener('click', event => {
+  event.preventDefault();
+  const target = project ? el<HTMLElement>('.view:not([hidden]) h1') : login.querySelector('input')!;
+  target.focus();
+});
+
+function updateStatus() {
+  if (!project) return;
+  const { status, hasBaseImage, participationTerms, startedAt, closedAt } = project;
+  const draft = status === 'draft';
+  const ready = hasBaseImage && !!participationTerms.trim() && validPalette(project.palette);
+  const labels = { draft: 'Brouillon', open: 'Ouvert', paused: 'Suspendu', closed: 'Clôturé' };
+  const help = {
+    draft: ready ? 'Le projet est prêt à ouvrir. L’ouverture figera le fond et la palette.' : 'Préparez les éléments ci-dessous avant d’accueillir les participants.',
+    open: 'Les participants peuvent dessiner. Vous pouvez suspendre temporairement les contributions.',
+    paused: 'Les contributions sont suspendues. Reprenez la participation quand vous le souhaitez.',
+    closed: 'La participation est définitivement clôturée. L’œuvre et ses exports restent accessibles.',
+  };
+  el('#project-name').textContent = project.title;
+  el('#project-status').textContent = labels[status];
+  el('#project-status').dataset.state = status;
+  el('#status-help').textContent = help[status];
+  el('#project-date-label').textContent = closedAt ? 'Clôture' : 'Ouverture';
+  const date = closedAt || startedAt;
+  el('#project-date').textContent = date ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(new Date(date)) : 'À venir';
+  const setup = el('#setup-list');
+  setup.replaceChildren();
+  for (const item of [!hasBaseImage && 'Importer le fond PNG', !participationTerms.trim() && 'Renseigner les conditions de participation', !validPalette(project.palette) && 'Valider les 24 couleurs']) {
+    if (item) { const li = document.createElement('li'); li.textContent = item; setup.append(li); }
+  }
+  el('#setup').hidden = !draft || ready;
+  el('#base-help').textContent = (hasBaseImage ? 'Fond importé. ' : '') + (draft ? 'PNG opaque de 720 × 480 pixels en niveaux de gris, 5 Mio maximum.' : 'Le fond et la palette sont verrouillés depuis l’ouverture du projet.');
+  el<HTMLButtonElement>('#base button').disabled = !draft;
+  el<HTMLInputElement>('#base input').disabled = !draft;
+  palette.readOnly = !draft;
+  const open = el<HTMLButtonElement>('[data-status=open]');
+  open.textContent = draft ? 'Ouvrir le projet' : 'Reprendre la participation';
+  open.hidden = !draft && status !== 'paused';
+  open.disabled = open.hidden || !ready;
+  el('[data-status=paused]').hidden = status !== 'open';
+  el('[data-status=closed]').hidden = status !== 'open' && status !== 'paused';
+}
+const colors = () => palette.value.split(/[\s,;]+/).filter(Boolean);
+function updatePalette() {
+  const values = colors(), valid = validPalette(values);
+  const preview = el('#palette-preview');
+  preview.replaceChildren();
+  for (const color of values.filter(value => /^#[0-9a-f]{6}$/i.test(value)).slice(0,24)) {
+    const swatch = document.createElement('span');
+    swatch.style.background = color; swatch.title = color; preview.append(swatch);
+  }
+  const hint = valid ? 'Palette valide · 24 couleurs distinctes.' : 'Saisissez 24 couleurs distinctes et suffisamment chromatiques, au format #RRGGBB, séparées par des espaces ou des virgules.';
+  palette.setCustomValidity(valid ? '' : hint);
+  el('#palette-feedback').textContent = hint;
+}
+palette.addEventListener('input', updatePalette);
+
+async function loadProject() {
+  const data: Project = await request('/api/admin/config').then(r => r.json());
+  project = data;
+  el<HTMLInputElement>('[name=title]').value = data.title;
+  el<HTMLTextAreaElement>('[name=description]').value = data.description;
+  el<HTMLTextAreaElement>('[name=terms]').value = data.participationTerms;
+  palette.value = data.palette.join(', ');
+  updatePalette();
+  updateStatus();
+  el('#loading').hidden = true;
+  el('#login-view').hidden = true;
+  controls.hidden = false;
+  navigate(true);
+}
+form('#login', async data => {
+  await request('/api/admin/login', json({ password: data.get('password') }));
+  login.reset();
+  await loadProject();
+  tell('Connexion établie.');
+});
+el('#logout').addEventListener('click', async () => {
+  try { await request('/api/admin/logout', json({})); location.reload(); }
+  catch (error) { tell((error as Error).message, true); }
+});
+form('#base', async data => {
+  const file = data.get('image');
+  if (!(file instanceof File) || !project) return;
+  await request('/api/admin/base-image', { method: 'POST', headers: { 'content-type': 'image/png' }, body: file });
+  project.hasBaseImage = true;
+  moderationLoaded = false;
+  updateStatus();
+  tell('Fond importé et vérifié.');
+});
+form('#config', async data => {
+  if (!project) return;
+  const body = { title: String(data.get('title')), description: String(data.get('description')), participationTerms: String(data.get('terms')), palette: colors() };
+  await request('/api/admin/config', { ...json(body), method: 'PUT' });
+  Object.assign(project, body);
+  moderationLoaded = false;
+  updateStatus();
+  tell('Configuration enregistrée.');
+});
+
+async function changeStatus(status: Status, confirmation?: string) {
+  await request('/api/admin/status', json({ status, confirmation }));
+  const data: Project = await request('/api/admin/config').then(r => r.json());
+  project = data;
+  if (data.status !== 'draft') { palette.value = data.palette.join(', '); updatePalette(); }
+  updateStatus();
+}
+for (const button of document.querySelectorAll<HTMLButtonElement>('[data-status]')) {
+  button.addEventListener('click', async () => {
+    const status = button.dataset.status as Status;
+    if (status === 'closed') { closeDialog.showModal(); cancelClose.focus(); return; }
+    button.disabled = true;
+    try { await changeStatus(status); tell('État du projet mis à jour.'); }
+    catch (error) { tell((error as Error).message, true); }
+    finally { button.disabled = false; updateStatus(); }
+  });
+}
+closeInput.addEventListener('input', () => { confirmClose.disabled = closeInput.value !== 'CLOTURER'; });
+cancelClose.addEventListener('click', () => closeDialog.close());
+closeDialog.addEventListener('cancel', event => { if (closeInput.disabled) event.preventDefault(); });
+closeDialog.addEventListener('close', () => {
+  closeInput.value = ''; confirmClose.disabled = true; el('#close-error').textContent = '';
+});
+confirmClose.addEventListener('click', async () => {
+  if (closeInput.value !== 'CLOTURER' || closeInput.disabled) return;
+  confirmClose.disabled = cancelClose.disabled = closeInput.disabled = true;
+  try { await changeStatus('closed', closeInput.value); closeDialog.close(); tell('Le projet est définitivement clôturé.'); }
+  catch (error) { el('#close-error').textContent = (error as Error).message; confirmClose.disabled = false; }
+  finally { cancelClose.disabled = closeInput.disabled = false; }
+});
+
+const history = el<HTMLButtonElement>('#history'), more = el<HTMLButtonElement>('#history-next');
+let after = 0, historyLoaded = false;
+async function loadHistory(reset: boolean) {
+  if (history.disabled) return;
+  history.disabled = more.disabled = true;
+  try {
+    const { events } = await request('/api/admin/events?limit=100&after=' + (reset ? 0 : after)).then(r => r.json());
+    const list = el('#events');
+    if (reset) { list.replaceChildren(); after = 0; }
+    for (const event of events) {
+      const row = document.createElement('pre');
+      row.textContent = '#' + event.seq + ' · ' + new Date(event.created_at).toLocaleString('fr-FR') + '\nParticipant : ' + event.participant_id + '\n' + event.command_json;
+      list.append(row); after = event.seq;
+    }
+    historyLoaded = true;
+    more.hidden = events.length < 100;
+    el('#history-info').textContent = list.childElementCount ? list.childElementCount + ' contribution(s) affichée(s).' : 'Aucune contribution enregistrée.';
+  } catch (error) { tell((error as Error).message, true); }
+  finally { history.disabled = more.disabled = false; }
+}
+el<HTMLDetailsElement>('#technical').addEventListener('toggle', () => {
+  if (el<HTMLDetailsElement>('#technical').open && !historyLoaded) void loadHistory(true);
+});
+history.addEventListener('click', () => void loadHistory(true));
+more.addEventListener('click', () => void loadHistory(false));
+
+void loadProject().catch(error => {
+  el('#loading').hidden = true;
+  el('#login-view').hidden = false;
+  if (error.message !== errors.UNAUTHENTICATED) tell(error.message, true);
+});
