@@ -73,7 +73,12 @@ export class CollaborationClient {
       if (error || (!result.accepted && (result.code === 'STORAGE_UNAVAILABLE' || result.code === 'RATE_LIMITED'))) {
         p.sent=false;
         p.retryAt=performance.now()+1000;
-        setTimeout(()=>this.flush(),1000);
+        const resume = () => {
+          const remaining = p.retryAt! - performance.now();
+          if (remaining > 0) setTimeout(resume, remaining);
+          else this.flush();
+        };
+        setTimeout(resume,1000);
         return;
       }
       if (result.accepted) { p.seq=result.seq; if (p.seq<=this.seq) this.pending=this.pending.filter(item=>item!==p); }
