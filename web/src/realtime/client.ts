@@ -4,7 +4,7 @@ import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 
 type State = { grid: number[]; seq: number; moderationRevision: number; status: string; palette:string[] };
 type Update = { seq: number; moderationRevision: number; changes: [number,number][] };
-type Pending = { command: DrawCommand; seq?: number; sent: boolean; preview:boolean };
+type Pending = { command: DrawCommand; seq?: number; sent: boolean; retryAt?: number; preview:boolean };
 
 /** The authoritative grid is never mutated by optimistic rendering. */
 export class CollaborationClient {
@@ -66,13 +66,22 @@ export class CollaborationClient {
   private flush() {
     if (!this.ready || !this.connected) return;
     const p=this.pending.find(item=>item.seq === undefined);
-    if (!p || p.sent) return;
+    if (!p || p.sent || (p.retryAt !== undefined && performance.now() < p.retryAt)) return;
     p.sent=true;
     this.socket!.timeout(5000).emit('draw:submit',p.command,(error:Error|null,result:DrawResult)=>{
       if (!this.pending.includes(p)) return;
-      if (error) { p.sent=false; if (this.connected) setTimeout(()=>this.flush(),1000); return; }
+      if (error || (!result.accepted && (result.code === 'STORAGE_UNAVAILABLE' || result.code === 'RATE_LIMITED'))) {
+        p.sent=false;
+        p.retryAt=performance.now()+1000;
+        const resume = () => {
+          const remaining = p.retryAt! - performance.now();
+          if (remaining > 0) setTimeout(resume, remaining);
+          else this.flush();
+        };
+        setTimeout(resume,1000);
+        return;
+      }
       if (result.accepted) { p.seq=result.seq; if (p.seq<=this.seq) this.pending=this.pending.filter(item=>item!==p); }
-      else if (result.code === 'STORAGE_UNAVAILABLE' || result.code === 'RATE_LIMITED') { p.sent=false; setTimeout(()=>this.flush(),1000); return; }
       else {
         this.pending=this.pending.filter(item=>item.command.strokeId!==p.command.strokeId || item.seq!==undefined);
         this.rejected?.(p.command,result.code);

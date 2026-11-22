@@ -35,3 +35,24 @@ it('signale un refus définitif et conserve les commandes des autres traits', as
   expect(refused).toHaveBeenCalledWith(command, 'COST_LIMIT_EXCEEDED');
   expect(mocks.socket.sent.map(item => item.command)).toEqual([command, other]);
 });
+
+it.each(['RATE_LIMITED', 'STORAGE_UNAVAILABLE', 'timeout'])('respecte le délai après %s malgré les soumissions et resynchronisations', async code => {
+  vi.useFakeTimers();
+  try {
+    const client = new CollaborationClient(() => {});
+    await client.connect();
+    const install = () => mocks.socket.handlers.get('canvas:state')?.(state());
+    install();
+    client.submit(command);
+    const next = {...command, opId:'c', strokeId:'d'};
+    mocks.socket.sent[0].ack(code === 'timeout' ? new Error(code) : null, {accepted:false, code});
+    client.submit(next);
+    install();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mocks.socket.sent.map(s => s.command)).toEqual([command]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.socket.sent.map(s => s.command)).toEqual([command, command]);
+    mocks.socket.sent[1].ack(null, {accepted:true, seq:1});
+    expect(mocks.socket.sent.map(s => s.command)).toEqual([command, command, next]);
+  } finally { vi.useRealTimers(); }
+});
