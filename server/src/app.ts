@@ -134,7 +134,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       if (typeof ack !== 'function') return;
       const reply=ack as (result:unknown)=>void, participantId=socket.data.participantId as string;
       if (!store.healthy || store.isBanned(participantId) || (store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') { reply({ok:false,code:'UNAVAILABLE'}); return; }
-      const row=store.db.prepare(`SELECT e.stroke_id FROM draw_events e WHERE e.participant_id=? AND e.final=1 AND COALESCE((SELECT a.action FROM moderation_actions a WHERE a.participant_id=e.participant_id AND a.stroke_id=e.stroke_id ORDER BY a.revision DESC LIMIT 1),'restore') != 'hide' ORDER BY e.seq DESC LIMIT 1`).get(participantId) as {stroke_id:string}|undefined;
+      const row=store.db.prepare(`SELECT e.stroke_id FROM draw_events e WHERE e.participant_id=? AND COALESCE((SELECT a.action FROM moderation_actions a WHERE a.participant_id=e.participant_id AND a.stroke_id=e.stroke_id ORDER BY a.revision DESC LIMIT 1),'restore') != 'hide' ORDER BY e.seq DESC LIMIT 1`).get(participantId) as {stroke_id:string}|undefined;
       if (!row) { reply({ok:false,code:'EMPTY'}); return; }
       try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); resetCanvas(); reply({ok:true}); }
       catch(error) { app.log.error(error,'undo failed'); if(!store.healthy)io.disconnectSockets(true); reply({ok:false,code:'UNAVAILABLE'}); }

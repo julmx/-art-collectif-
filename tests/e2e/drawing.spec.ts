@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { test, expect } from '@playwright/test';
 test('la toile utilise la place disponible sur ordinateur et tient sur mobile',async({page})=>{
   await page.setViewportSize({width:1600,height:1000});await page.goto('/');
@@ -106,6 +107,54 @@ test('modération visuelle : sélection, aperçu, restauration et bannissement',
  const answers=['BANNIR'];const answerDialog=(d:import('@playwright/test').Dialog)=>{void d.accept(d.type()==='prompt'?answers.shift():undefined);};a.on('dialog',answerDialog);await a.getByRole('button',{name:'Bannir le participant du trait surligné'}).click();await expect(p.locator('.status')).toContainText('Participation suspendue');await p.reload();await expect(p.locator('.status')).toContainText('Participation suspendue');await a.getByRole('button',{name:'Lever le bannissement'}).click();a.off('dialog',answerDialog);await expect(p.locator('.status')).toContainText('dessin ouvert');
  await a.getByRole('button',{name:'Voir les traits masqués'}).click();await expect(a.locator('#mod-results .mod-row')).toHaveCount(1,{timeout:20000});await a.locator('#mod-results input[type=checkbox]').first().check();await a.getByRole('button',{name:'Aperçu de la restauration'}).click();await expect(a.locator('#mod-preview')).toBeVisible();a.once('dialog',d=>d.accept());await a.getByRole('button',{name:'Confirmer la décision'}).click();await expect.poll(pixel).not.toEqual(initial);
  }finally{await participant.close();await administrator.close();}
+});
+test('annule le geste interrompu après reconnexion et conserve le trait précédent au rejeu', async ({page, context}) => {
+  let cutConnection: (() => void) | undefined;
+  await context.routeWebSocket('**/socket.io/**', route => {
+    const server = route.connectToServer();
+    cutConnection = () => {
+      server.close({code:1001});
+      route.close({code:1001});
+    };
+  });
+  await page.goto('/');
+  await expect(page.locator('.status')).toContainText('dessin ouvert');
+  const canvas=page.locator('#canvas');
+  await canvas.scrollIntoViewIfNeeded();
+  const box=await canvas.boundingBox();
+  if (!box) throw new Error('Toile absente');
+  const x=(cell:number)=>box.x+(cell+0.5)*box.width/720, y=box.y+80.5*box.height/480;
+  const undo=page.getByRole('button',{name:/Annuler/});
+  await page.mouse.click(x(600),y);
+  await expect(undo).toBeEnabled();
+  await page.mouse.move(x(640),y);
+  await page.mouse.down();
+
+  // A second session observes the broadcast of the unfinished part.
+  const disconnectDrawingPage=cutConnection;
+  if (!disconnectDrawingPage) throw new Error('WebSocket de dessin absent');
+  const observer=await context.newPage();
+  await observer.goto('/');
+  await expect(observer.locator('.status')).toContainText('dessin ouvert');
+  const pixel=(cell:number)=>observer.locator('#canvas').evaluate((c:HTMLCanvasElement,x)=>[...c.getContext('2d')!.getImageData(x,80,1,1).data],cell);
+  await expect.poll(()=>pixel(640)).toEqual([230,57,70,255]);
+  await expect(undo).toBeEnabled();
+  disconnectDrawingPage();
+  await expect(page.locator('.status')).toContainText('Déconnecté');
+  await page.mouse.up();
+  await expect(page.locator('.status')).toContainText('dessin ouvert');
+  await undo.click();
+  await expect.poll(()=>pixel(640)).toEqual([128,128,128,255]);
+  expect(await pixel(600)).toEqual([230,57,70,255]);
+
+  const origin='http://127.0.0.1:4173';
+  expect((await page.request.post('/api/admin/login',{headers:{origin},data:{password:'test-password'}})).status()).toBe(200);
+  const exported=await page.request.get('/api/admin/export/final.png');
+  expect(exported.status()).toBe(200);
+  const {data,info}=await sharp(await exported.body()).removeAlpha().raw().toBuffer({resolveWithObject:true});
+  const replayPixel=(x:number)=>[...data.subarray((80*info.width+x)*3,(80*info.width+x)*3+3)];
+  expect(replayPixel(600)).toEqual([230,57,70]);
+  expect(replayPixel(640)).toEqual([128,128,128]);
 });
 test('la clôture exige une saisie explicite et un second clic',async({page})=>{
  await page.goto('/admin.html');await page.getByLabel('Mot de passe').fill('test-password');await page.getByRole('button',{name:'Se connecter'}).click();
