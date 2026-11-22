@@ -20,6 +20,49 @@ test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ p
   await page.mouse.down(); await page.mouse.move(movedBox.x + movedBox.width / 2 + 25, movedBox.y + movedBox.height / 2 + 10); await page.mouse.up();
   expect(await differences()).toBe(1);
 });
+test('regroupe les peintures d’une rafale et affiche la même toile que le serveur',async({page})=>{
+  const origin='http://127.0.0.1:4173';
+  const {io}=await import('socket.io-client');
+  const session=await fetch(origin+'/api/session',{method:'POST',headers:{origin}});
+  const sender=io('http://127.0.0.1:3000',{extraHeaders:{origin,cookie:session.headers.get('set-cookie')!},transports:['websocket'],autoConnect:false});
+  try {
+    const ready=new Promise<void>(resolve=>sender.once('canvas:state',()=>resolve()));
+    sender.connect();
+    await ready;
+    await page.goto('/');
+    await expect(page.locator('.status')).toContainText('dessin ouvert');
+    const canvas=page.locator('#canvas');
+    await expect.poll(()=>canvas.evaluate((c:HTMLCanvasElement)=>c.getContext('2d')!.getImageData(0,0,1,1).data[0])).toBe(128);
+    const paints=await canvas.evaluateHandle((c:HTMLCanvasElement)=>{
+      const frames:number[]=[];
+      let frame=0;
+      function tick(){frame++;requestAnimationFrame(tick);}
+      requestAnimationFrame(tick);
+      const ctx=c.getContext('2d')!, original=ctx.putImageData.bind(ctx);
+      ctx.putImageData=new Proxy(original,{apply(target,receiver,args){frames.push(frame);return Reflect.apply(target,receiver,args);}});
+      return frames;
+    });
+    const results=await Promise.all(Array.from({length:30},(_,i)=>sender.timeout(5000).emitWithAck('draw:submit',{
+      opId:crypto.randomUUID(),strokeId:crypto.randomUUID(),partIndex:0,final:true,tool:'pixel',size:1,colorId:i===29?2:1,points:[[300+i,60]],
+    })));
+    expect(results.every(r=>r.accepted)).toBe(true);
+    await expect.poll(()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(329,60,1,1).data])).toEqual([240,100,73,255]);
+    const frames=await paints.jsonValue();
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.length).toBeLessThan(30);
+    expect(new Set(frames).size).toBe(frames.length);
+    expect((await page.request.post('/api/admin/login',{headers:{origin},data:{password:'test-password'}})).status()).toBe(200);
+    const matches=await canvas.evaluate(async(c:HTMLCanvasElement)=>{
+      const response=await fetch('/api/admin/export/final.png');
+      const image=await createImageBitmap(await response.blob());
+      const ctx=new OffscreenCanvas(c.width,c.height).getContext('2d')!;
+      ctx.drawImage(image,0,0);
+      const expected=ctx.getImageData(0,0,c.width,c.height).data;
+      return c.getContext('2d')!.getImageData(0,0,c.width,c.height).data.every((v,i)=>v===expected[i]);
+    });
+    expect(matches).toBe(true);
+  } finally {sender.disconnect();}
+});
 test('palette et zoom sont accessibles', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Couleur 2', exact: true }).click();

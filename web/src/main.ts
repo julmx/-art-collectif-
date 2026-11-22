@@ -12,11 +12,11 @@ app.innerHTML = `<header><a class="brand" href="#"><span class="brand-mark">✳<
 <div class="studio-bottom"><div><button id="zoom-out" aria-label="Réduire le zoom">−</button><span id="zoom-label">100 %</span><button id="zoom-in" aria-label="Augmenter le zoom">+</button><button id="reset">Recentrer</button></div><span>Déplacez la toile avec l’outil dédié ou à deux doigts.</span></div></section>
 <footer><span>ART COLLECTIF ©</span><button id="info">À propos & participation ↗</button></footer></main><dialog id="about"><form method="dialog"><button class="close" aria-label="Fermer">×</button></form><span class="eyebrow">À PROPOS</span><h2>Une œuvre en mouvement.</h2><p id="project-description"></p><p id="project-terms"></p></dialog>`;
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!, viewport = document.querySelector<HTMLElement>('#viewport')!;
-const ctx = canvas.getContext('2d')!; let grid: Uint8Array = new Uint8Array(WIDTH * HEIGHT);
+const ctx = canvas.getContext('2d')!;
 let available = false;
 let colors: readonly string[] = PALETTE; let base: Uint8ClampedArray | null = null; let previousStatus='';
 const actionStatus = document.querySelector<HTMLElement>('#undo-status')!;
-const client = new CollaborationClient((display, canDraw, status, paletteColors, reset) => { if (paletteColors.length === 24 && paletteColors.join() !== colors.join()) { colors = paletteColors; updatePalette(); } if (status==='open' && previousStatus!=='open') refreshProject(); previousStatus=status; if ((!canDraw || reset) && stroke) { stroke=null; drawingId=null; last=null; } grid = display; if (stroke && stroke.points.length) applyCells(grid,paintBrush(stroke.points,stroke.size,stroke.color)); available = canDraw; document.querySelector<HTMLButtonElement>('#undo')!.disabled = !canDraw || !client.canUndo(); const label = document.querySelector<HTMLElement>('.status')!; label.textContent = status === 'open' && canDraw ? '● Connecté · dessin ouvert' : status === 'disconnected' ? '● Déconnecté · dessin suspendu' : status === 'banned' ? '● Participation suspendue · consultation disponible' : `● Projet : ${status}`; render(); }, (command) => {
+const client = new CollaborationClient((canDraw, status, paletteColors, reset) => { if (paletteColors.length === 24 && paletteColors.join() !== colors.join()) { colors = paletteColors; updatePalette(); } if (status==='open' && previousStatus!=='open') refreshProject(); previousStatus=status; if ((!canDraw || reset) && stroke) { stroke=null; drawingId=null; last=null; } available = canDraw; document.querySelector<HTMLButtonElement>('#undo')!.disabled = !canDraw || !client.canUndo(); const label = document.querySelector<HTMLElement>('.status')!; label.textContent = status === 'open' && canDraw ? '● Connecté · dessin ouvert' : status === 'disconnected' ? '● Déconnecté · dessin suspendu' : status === 'banned' ? '● Participation suspendue · consultation disponible' : `● Projet : ${status}`; render(); }, (command) => {
   if (stroke?.id === command.strokeId) {
     stroke = null;
     drawingId = null;
@@ -56,10 +56,20 @@ function updatePalette() { palette.replaceChildren(); colors.forEach((hex, i) =>
 updatePalette();
 SIZES.forEach(n => { const button = document.createElement('button'); button.textContent = String(n); button.setAttribute('aria-pressed', String(n === size)); button.addEventListener('click', () => { size = n; sizes.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === button))); }); sizes.append(button); });
 document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach(button => button.addEventListener('click', () => { tool = button.dataset.tool as typeof tool; document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); viewport.classList.toggle('panning', tool === 'pan'); finishStroke(); }));
-function render() { const image = ctx.createImageData(WIDTH, HEIGHT); for (let i = 0; i < grid.length; i++) { const c = grid[i], x = i % WIDTH, y = Math.floor(i / WIDTH); const v = ((Math.floor(x / 48) + Math.floor(y / 48)) % 2) ? 239 : 246; const hex = c ? colors[c - 1] : null; image.data[i*4] = hex ? parseInt(hex.slice(1,3),16) : (base?.[i*4] ?? v); image.data[i*4+1] = hex ? parseInt(hex.slice(3,5),16) : (base?.[i*4+1] ?? v); image.data[i*4+2] = hex ? parseInt(hex.slice(5,7),16) : (base?.[i*4+2] ?? v); image.data[i*4+3] = 255; } ctx.putImageData(image,0,0); }
+let paintPending = false;
+function render() {
+  if (paintPending) return;
+  paintPending = true;
+  requestAnimationFrame(paint);
+}
+function paint() {
+  paintPending = false;
+  const grid = client.displayGrid();
+  if (stroke?.points.length) applyCells(grid, paintBrush(stroke.points,stroke.size,stroke.color));
+  const image = ctx.createImageData(WIDTH, HEIGHT); for (let i = 0; i < grid.length; i++) { const c = grid[i], x = i % WIDTH, y = Math.floor(i / WIDTH); const v = ((Math.floor(x / 48) + Math.floor(y / 48)) % 2) ? 239 : 246; const hex = c ? colors[c - 1] : null; image.data[i*4] = hex ? parseInt(hex.slice(1,3),16) : (base?.[i*4] ?? v); image.data[i*4+1] = hex ? parseInt(hex.slice(3,5),16) : (base?.[i*4+1] ?? v); image.data[i*4+2] = hex ? parseInt(hex.slice(5,7),16) : (base?.[i*4+2] ?? v); image.data[i*4+3] = 255; } ctx.putImageData(image,0,0); }
 function transform() { canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`; document.querySelector('#zoom-label')!.textContent = `${Math.round(zoom * 100)} %`; }
 function cell(e: PointerEvent): Point | null { const r = canvas.getBoundingClientRect(); const x = Math.floor((e.clientX-r.left)*WIDTH/r.width), y = Math.floor((e.clientY-r.top)*HEIGHT/r.height); return x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT ? [x,y] : null; }
-function draw(p: Point) { if (!stroke) return; if (last && p[0] === last[0] && p[1] === last[1]) return; stroke.points.push(p); applyCells(grid, paintBrush(last ? [last,p] : [p],stroke.size,stroke.color)); last=p; render(); if (stroke.points.length >= DRAW_PART_POINTS) flushStroke(); }
+function draw(p: Point) { if (!stroke) return; if (last && p[0] === last[0] && p[1] === last[1]) return; stroke.points.push(p); last=p; render(); if (stroke.points.length >= DRAW_PART_POINTS) flushStroke(); }
 function startGesture() { restartId=null; const values = [...pointers.values()]; if (values.length < 2) return; const [a,b] = values; gesture = {x:(a.x+b.x)/2,y:(a.y+b.y)/2,distance:Math.hypot(a.x-b.x,a.y-b.y) || 1,zoom,ox:offsetX,oy:offsetY}; finishStroke(); }
 function beginStroke(id:number,p:Point) { drawingId=id; restartId=null; stroke={id:crypto.randomUUID(),part:0,points:[],lastSent:null,tool:'brush',color,size}; draw(p); }
 viewport.addEventListener('pointerdown', e => { e.preventDefault(); viewport.setPointerCapture(e.pointerId); pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (pointers.size >= 2) { startGesture(); return; } if (tool === 'pan') { gesture = {x:e.clientX,y:e.clientY,distance:1,zoom,ox:offsetX,oy:offsetY}; return; } const p = cell(e); if (p && available) beginStroke(e.pointerId,p); });
