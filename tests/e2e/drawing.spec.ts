@@ -7,6 +7,7 @@ test('la toile utilise la place disponible sur ordinateur et tient sur mobile',a
 test('un clic dessine une cellule et le déplacement ne dessine pas', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.status')).toContainText('dessin ouvert');
+  await page.getByRole('group', { name: 'Épaisseur du pinceau' }).getByRole('button', { name: '1', exact: true }).click();
   const canvas = page.locator('canvas'); await canvas.scrollIntoViewIfNeeded(); const box = await canvas.boundingBox();
   if (!box) throw new Error('Canvas invisible');
   await canvas.evaluate((c: HTMLCanvasElement) => { (window as unknown as {before:Uint8ClampedArray}).before = c.getContext('2d')!.getImageData(0,0,c.width,c.height).data; });
@@ -47,18 +48,32 @@ test('interface privée : connexion et consultation de l’historique',async({pa
   await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
   await page.getByLabel('Mot de passe').fill('test-password');
   await page.getByRole('button',{name:'Se connecter'}).click();
-  await expect(page.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
-  await expect(page.locator('#project-status')).toHaveText('Ouvert');await expect(page.locator('[data-status=open]')).toBeDisabled();await expect(page.locator('[data-status=paused]')).toBeEnabled();await expect(page.locator('#config-details')).not.toHaveAttribute('open','');await page.locator('#config-details summary').click();await expect(page.locator('[name=palette]')).toHaveAttribute('readonly','');await expect(page.locator('#base input')).toBeDisabled();
+  await expect(page.getByRole('heading',{name:'Vue d’ensemble'})).toBeVisible();
+  await expect(page.locator('#project-status')).toHaveText('Ouvert');
+  await expect(page.locator('[data-status=open]')).toBeHidden();
+  await expect(page.locator('[data-status=paused]')).toBeEnabled();
+  await page.getByRole('link',{name:'Configuration',exact:true}).click();
+  await expect(page.locator('[name=palette]')).toHaveAttribute('readonly','');
+  await expect(page.locator('#base input')).toBeDisabled();
   await expect(page.locator('#palette-feedback')).toContainText('Palette valide');
   await expect(page.locator('#palette-preview span')).toHaveCount(24);
-  await expect(page.getByLabel('Identifiant participant')).toHaveCount(0);await expect(page.getByLabel('Identifiant du trait')).toHaveCount(0);
-  await page.getByText('Historique technique').click();await page.getByRole('button',{name:'Actualiser l’historique'}).click();
+  await page.getByRole('link',{name:'Modération',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
+  await expect(page.getByLabel('Identifiant participant')).toHaveCount(0);
+  await expect(page.getByLabel('Identifiant du trait')).toHaveCount(0);
+  await page.getByText('Historique technique').click();
   await expect(page.locator('#events pre').first()).toBeVisible();
   await page.getByRole('button',{name:'Se déconnecter'}).click();
   await expect(page.getByRole('heading',{name:'Connexion'})).toBeVisible();
 });
 test('administration : création et téléchargement d’une archive',async({page})=>{
  await page.goto('/admin.html');await page.getByLabel('Mot de passe').fill('test-password');await page.getByRole('button',{name:'Se connecter'}).click();
+ await page.getByRole('link',{name:'Exports',exact:true}).click();
+ await page.getByLabel('Durée (s)').fill('600');
+ await expect(page.getByRole('button',{name:'Créer la vidéo'})).toBeDisabled();
+ await expect(page.locator('#frames')).toContainText('dépasse');
+ await page.getByLabel('Durée (s)').fill('30');
+ await expect(page.getByRole('button',{name:'Créer la vidéo'})).toBeEnabled();
  await page.getByRole('button',{name:'Créer l’archive'}).click();await expect(page.locator('#export-progress')).toContainText('terminée',{timeout:30000});
  await expect(page.locator('#generated-list article').first()).toContainText('Archive ZIP');await expect(page.locator('#generated-list article').first()).toContainText('Capture terminée le');await expect(page.locator('#generated-list article').first()).toContainText('contribution n°');
  const download=page.waitForEvent('download');await page.locator('#generated-list a').first().click();expect((await download).suggestedFilename()).toMatch(/^archive-.*\.zip$/);
@@ -71,7 +86,7 @@ test('la sortie puis la rentrée du pointeur ne relient pas artificiellement le 
 test('masquer puis restaurer un trait conserve les écritures ultérieures',async({browser})=>{
  const ctxA=await browser.newContext(),ctxB=await browser.newContext(),ctxAdmin=await browser.newContext();
  try{
-  const a=await ctxA.newPage(),b=await ctxB.newPage(),admin=await ctxAdmin.newPage();await Promise.all([a.goto('/'),b.goto('/'),admin.goto('/admin.html')]);await Promise.all([expect(a.locator('.status')).toContainText('dessin ouvert'),expect(b.locator('.status')).toContainText('dessin ouvert')]);
+  const a=await ctxA.newPage(),b=await ctxB.newPage(),admin=await ctxAdmin.newPage();await Promise.all([a.goto('/'),b.goto('/'),admin.goto('/admin.html#moderation')]);await Promise.all([expect(a.locator('.status')).toContainText('dessin ouvert'),expect(b.locator('.status')).toContainText('dessin ouvert')]);
   await admin.getByLabel('Mot de passe').fill('test-password');await admin.getByRole('button',{name:'Se connecter'}).click();await expect(admin.getByRole('heading',{name:'Historique et modération'})).toBeVisible();
   const ca=a.locator('canvas');await ca.scrollIntoViewIfNeeded();const box=await ca.boundingBox();if(!box)throw new Error('Canvas invisible');const y=box.y+box.height*350.5/480;
   await a.mouse.move(box.x+box.width*200.5/720,y);await a.mouse.down();await a.mouse.move(box.x+box.width*300.5/720,y);await a.mouse.up();
@@ -87,7 +102,7 @@ test('masquer puis restaurer un trait conserve les écritures ultérieures',asyn
 test('modération visuelle : sélection, aperçu, restauration et bannissement',async({browser})=>{
  test.setTimeout(60000);const participant=await browser.newContext(),administrator=await browser.newContext();
  try{const p=await participant.newPage(),a=await administrator.newPage();await p.goto('/');await expect(p.locator('.status')).toContainText('dessin ouvert');const canvas=p.locator('canvas');await canvas.scrollIntoViewIfNeeded();const box=await canvas.boundingBox();if(!box)throw new Error('Toile absente');const pixel=()=>canvas.evaluate((c:HTMLCanvasElement)=>[...c.getContext('2d')!.getImageData(500,400,1,1).data]);await expect.poll(pixel).toEqual([128,128,128,255]);const initial=await pixel();await canvas.click({position:{x:box.width*500.5/720,y:box.height*400.5/480}});await expect.poll(pixel).toEqual([230,57,70,255]);
- await a.goto('/admin.html');await a.getByLabel('Mot de passe').fill('test-password');await a.getByRole('button',{name:'Se connecter'}).click();const img=a.locator('#mod-image');await expect(img).toBeVisible();await expect.poll(()=>img.evaluate((i:HTMLImageElement)=>i.complete&&i.naturalWidth>0)).toBe(true);await img.scrollIntoViewIfNeeded();const rect=await img.boundingBox();if(!rect)throw new Error('Image absente');await img.click({position:{x:rect.width*500.5/720,y:rect.height*400.5/480}});await expect(a.locator('#mod-results .mod-row')).toHaveCount(1,{timeout:10000});await expect(a.locator('#mod-results input[type=checkbox]').first()).toBeChecked();await expect(a.locator('#mod-selected-list')).toContainText('Trait #');await expect(a.locator('#mod-reason')).toHaveCount(0);await a.getByRole('button',{name:'Aperçu du masquage'}).click();await expect(a.locator('#mod-preview')).toBeVisible();a.once('dialog',d=>d.accept());await a.getByRole('button',{name:'Confirmer la décision'}).click();await expect(a.locator('#mod-status')).toContainText('Décision appliquée');await expect.poll(pixel).toEqual(initial);
+ await a.goto('/admin.html#moderation');await a.getByLabel('Mot de passe').fill('test-password');await a.getByRole('button',{name:'Se connecter'}).click();const img=a.locator('#mod-image');await expect(img).toBeVisible();await expect.poll(()=>img.evaluate((i:HTMLImageElement)=>i.complete&&i.naturalWidth>0)).toBe(true);await img.scrollIntoViewIfNeeded();const rect=await img.boundingBox();if(!rect)throw new Error('Image absente');await img.click({position:{x:rect.width*500.5/720,y:rect.height*400.5/480}});await expect(a.locator('#mod-results .mod-row')).toHaveCount(1,{timeout:10000});await expect(a.locator('#mod-results input[type=checkbox]').first()).toBeChecked();await expect(a.locator('#mod-selected-list')).toContainText('Trait #');await expect(a.locator('#mod-reason')).toHaveCount(0);await a.getByRole('button',{name:'Aperçu du masquage'}).click();await expect(a.locator('#mod-preview')).toBeVisible();a.once('dialog',d=>d.accept());await a.getByRole('button',{name:'Confirmer la décision'}).click();await expect(a.locator('#mod-status')).toContainText('Décision appliquée');await expect.poll(pixel).toEqual(initial);
  const answers=['BANNIR'];const answerDialog=(d:import('@playwright/test').Dialog)=>{void d.accept(d.type()==='prompt'?answers.shift():undefined);};a.on('dialog',answerDialog);await a.getByRole('button',{name:'Bannir le participant du trait surligné'}).click();await expect(p.locator('.status')).toContainText('Participation suspendue');await p.reload();await expect(p.locator('.status')).toContainText('Participation suspendue');await a.getByRole('button',{name:'Lever le bannissement'}).click();a.off('dialog',answerDialog);await expect(p.locator('.status')).toContainText('dessin ouvert');
  await a.getByRole('button',{name:'Voir les traits masqués'}).click();await expect(a.locator('#mod-results .mod-row')).toHaveCount(1,{timeout:20000});await a.locator('#mod-results input[type=checkbox]').first().check();await a.getByRole('button',{name:'Aperçu de la restauration'}).click();await expect(a.locator('#mod-preview')).toBeVisible();a.once('dialog',d=>d.accept());await a.getByRole('button',{name:'Confirmer la décision'}).click();await expect.poll(pixel).not.toEqual(initial);
  }finally{await participant.close();await administrator.close();}
