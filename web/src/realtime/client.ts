@@ -42,10 +42,16 @@ export class CollaborationClient {
   }
   submit(command: DrawCommand) { if (!this.connected || !this.ready || this.status !== 'open' || this.pending.length >= 256) return false; this.pending.push({command,sent:false,preview:true}); this.emit(); this.flush(); return true; }
   canUndo() { return !this.undoing && this.pending.length === 0; }
-  async undo():Promise<'ok'|'empty'|'error'> {
+  async undo():Promise<'ok'|'empty'|'rate-limited'|'error'> {
     if (!this.connected || !this.ready || this.status !== 'open' || this.banned || !this.canUndo()) return 'error';
     this.undoing=true; this.emit();
-    try { const result = await this.socket!.timeout(120000).emitWithAck('draw:undo'); return result?.ok ? 'ok' : result?.code === 'EMPTY' ? 'empty' : 'error'; }
+    try {
+      const result = await this.socket!.timeout(120000).emitWithAck('draw:undo');
+      if (result?.ok) return 'ok';
+      if (result?.code === 'EMPTY') return 'empty';
+      if (result?.code === 'RATE_LIMITED') return 'rate-limited';
+      return 'error';
+    }
     catch { return 'error'; }
     finally { this.undoing=false; this.emit(); }
   }

@@ -55,6 +55,8 @@ it('annule les tracés du participant sans effacer ceux des autres', async () =>
   const dir=mkdtempSync(join(tmpdir(),'art-undo-'));
   const {app,store}=await createApp({dbPath:join(dir,'db.sqlite'),origin:'http://localhost:4173',secureCookie:false});
   const sockets:Socket[]=[];
+  let now = performance.now();
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
   try {
     await app.listen({port:0,host:'127.0.0.1'});
     const address=app.server.address(); if(!address || typeof address==='string') throw new Error('address');
@@ -70,9 +72,21 @@ it('annule les tracés du participant sans effacer ceux des autres', async () =>
     const reset=new Promise<any>(resolve=>sockets[1].once('canvas:reset',resolve));
     expect(await sockets[0].timeout(15000).emitWithAck('draw:undo')).toEqual({ok:true});
     const state=await reset; expect(state.grid[5*720+4]).toBe(0); expect(state.grid[5*720+5]).toBe(2);
+    expect(await sockets[1].emitWithAck('draw:undo')).toEqual({ok:false,code:'RATE_LIMITED'});
+
+    now += 1000;
+    const participant = sockets[0];
+    participant.disconnect();
+    const reconnected = new Promise<void>(resolve => participant.once('canvas:state', resolve));
+    participant.connect();
+    await reconnected;
+    expect(await participant.emitWithAck('draw:undo')).toEqual({ok:false,code:'RATE_LIMITED'});
+    expect(store.revision()).toBe(1);
+
+    now += 2000;
     expect(await sockets[0].emitWithAck('draw:undo')).toEqual({ok:false,code:'EMPTY'});
     expect(store.grid[5*720+5]).toBe(2);
-  } finally { sockets.forEach(s=>s.disconnect()); await app.close(); rmSync(dir,{recursive:true,force:true}); }
+  } finally { clock.mockRestore(); sockets.forEach(s=>s.disconnect()); await app.close(); rmSync(dir,{recursive:true,force:true}); }
 },30000);
 
 it('regroupe les resynchronisations et déconnecte un transport dont la file reste pleine', async () => {
