@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { SIZES, WIDTH, HEIGHT, DRAW_PART_POINTS, DRAW_PART_WORK, estimateBrushWork, paintBrush, applyCells, type Cell } from '../../../shared/raster';
 import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 import { PALETTE } from '../../../shared/palette';
@@ -29,9 +29,17 @@ export class Store {
   healthy = true;
   private batching = false;
   lastChanges: Cell[] | null = null;
+  private readonly stmtHidden: StatementSync;
+  private readonly stmtRevision: StatementSync;
+  private readonly stmtIsBanned: StatementSync;
+  private readonly stmtDuplicate: StatementSync;
+  private readonly stmtProjectStatus: StatementSync;
+  private readonly stmtLastStrokePart: StatementSync;
+  private readonly stmtLastCreatedAt: StatementSync;
+  private readonly stmtInsertDrawEvent: StatementSync;
   constructor(path: string, deferRebuild=false) {
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;');
+    this.db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;');
     const schemaVersion=Number((this.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version);
     if(schemaVersion>1) throw new Error('Database schema is newer than this application');
     if ((this.db.prepare('PRAGMA foreign_keys').get() as {foreign_keys:number}).foreign_keys !== 1) throw new Error('SQLite foreign keys unavailable');
@@ -42,6 +50,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS participants (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS draw_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT NOT NULL, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, part_index INTEGER NOT NULL CHECK(part_index>=0), final INTEGER NOT NULL CHECK(final IN (0,1)), tool TEXT NOT NULL CHECK(tool IN ('pixel','brush')), color_id INTEGER NOT NULL CHECK(color_id BETWEEN 1 AND 24), size INTEGER NOT NULL CHECK(size IN (1,3,5,9,15,21)), points_json TEXT NOT NULL, command_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(participant_id,op_id), UNIQUE(participant_id,stroke_id,part_index));
       CREATE INDEX IF NOT EXISTS draw_stroke ON draw_events(participant_id,stroke_id);
+      CREATE INDEX IF NOT EXISTS draw_created_at ON draw_events(created_at);
+      CREATE INDEX IF NOT EXISTS draw_participant_seq ON draw_events(participant_id, seq DESC);
       CREATE TABLE IF NOT EXISTS terms_history (id INTEGER PRIMARY KEY, terms TEXT NOT NULL, effective_after_seq INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS moderation_actions (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL UNIQUE, participant_id TEXT NOT NULL REFERENCES participants(id), stroke_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('hide','restore')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS participant_sanctions (id INTEGER PRIMARY KEY, participant_id TEXT NOT NULL REFERENCES participants(id), action TEXT NOT NULL CHECK(action IN ('ban','unban')), reason TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -61,15 +71,23 @@ export class Store {
     this.db.exec('PRAGMA user_version=1');
     this.db.exec('COMMIT');
     } catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
+    this.stmtHidden = this.db.prepare('SELECT action FROM moderation_actions WHERE participant_id=? AND stroke_id=? AND revision<=? ORDER BY revision DESC LIMIT 1');
+    this.stmtRevision = this.db.prepare('SELECT moderation_revision FROM project WHERE id=1');
+    this.stmtIsBanned = this.db.prepare('SELECT action FROM participant_sanctions WHERE participant_id=? ORDER BY id DESC LIMIT 1');
+    this.stmtDuplicate = this.db.prepare('SELECT seq, command_json FROM draw_events WHERE participant_id=? AND op_id=?');
+    this.stmtProjectStatus = this.db.prepare('SELECT status FROM project WHERE id=1');
+    this.stmtLastStrokePart = this.db.prepare('SELECT part_index,final,tool,color_id,size,points_json FROM draw_events WHERE participant_id=? AND stroke_id=? ORDER BY part_index DESC LIMIT 1');
+    this.stmtLastCreatedAt = this.db.prepare('SELECT created_at FROM draw_events ORDER BY seq DESC LIMIT 1');
+    this.stmtInsertDrawEvent = this.db.prepare('INSERT INTO draw_events(op_id,participant_id,stroke_id,part_index,final,tool,color_id,size,points_json,command_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
     if (deferRebuild) this.seq=Number((this.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM draw_events').get() as {seq:number}).seq);
     else this.rebuild();
   }
   hidden(participantId:string,strokeId:string,revision:number): boolean {
-    const row = this.db.prepare('SELECT action FROM moderation_actions WHERE participant_id=? AND stroke_id=? AND revision<=? ORDER BY revision DESC LIMIT 1').get(participantId,strokeId,revision) as {action:string}|undefined;
+    const row = this.stmtHidden.get(participantId,strokeId,revision) as {action:string}|undefined;
     return row?.action === 'hide';
   }
-  revision():number { return (this.db.prepare('SELECT moderation_revision FROM project WHERE id=1').get() as {moderation_revision:number}).moderation_revision; }
-  isBanned(participantId:string):boolean {return (this.db.prepare('SELECT action FROM participant_sanctions WHERE participant_id=? ORDER BY id DESC LIMIT 1').get(participantId) as {action:string}|undefined)?.action==='ban';}
+  revision():number { return (this.stmtRevision.get() as {moderation_revision:number}).moderation_revision; }
+  isBanned(participantId:string):boolean {return (this.stmtIsBanned.get(participantId) as {action:string}|undefined)?.action==='ban';}
   sanction(participantId:string,action:'ban'|'unban',reason:string):void {
     if(!['ban','unban'].includes(action)||reason.length>1000||!this.db.prepare('SELECT 1 FROM participants WHERE id=?').get(participantId))throw new Error('INVALID_SANCTION');
     this.db.prepare('INSERT INTO participant_sanctions(participant_id,action,reason,created_at) VALUES(?,?,?,?)').run(participantId,action,reason.trim(),new Date().toISOString());
@@ -125,18 +143,18 @@ export class Store {
   submit(participantId: string, input: unknown, timings?: DrawWriteTimings): DrawResult {
     const parsed = validate(input); if (!parsed.command) return {opId:parsed.opId,accepted:false,code:parsed.code!};
     const c = parsed.command, canonical = JSON.stringify(c);
-    const duplicate = this.db.prepare('SELECT seq, command_json FROM draw_events WHERE participant_id=? AND op_id=?').get(participantId,c.opId) as {seq:number;command_json:string}|undefined;
+    const duplicate = this.stmtDuplicate.get(participantId,c.opId) as {seq:number;command_json:string}|undefined;
     if (duplicate) return duplicate.command_json === canonical ? {opId:c.opId,accepted:true,seq:duplicate.seq,duplicate:true} : {opId:c.opId,accepted:false,code:'OP_ID_CONFLICT'};
     const reject = (code:string): DrawResult => ({opId:c.opId,accepted:false,code});
     if (!this.healthy) return reject('STORAGE_UNAVAILABLE');
     if (this.isBanned(participantId)) return reject('PARTICIPANT_BANNED');
-    if ((this.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
+    if ((this.stmtProjectStatus.get() as {status:string}).status !== 'open') return reject('PROJECT_NOT_OPEN');
     if (!Number.isInteger(c.colorId) || c.colorId<1 || c.colorId>24) return reject('INVALID_COLOR');
     if (!Number.isInteger(c.size) || !SIZES.includes(c.size as typeof SIZES[number]) || (c.tool==='pixel' && c.size!==1)) return reject('INVALID_SIZE');
     if (c.points.some(([x,y])=>!Number.isInteger(x)||!Number.isInteger(y)||x<0||x>=WIDTH||y<0||y>=HEIGHT)) return reject('INVALID_COORDINATES');
     // Bound worst-case raster work before committing. Long inputs must be split.
     if (estimateBrushWork(c.points,c.size) > DRAW_PART_WORK) return reject('COST_LIMIT_EXCEEDED');
-    const prior = this.db.prepare('SELECT part_index,final,tool,color_id,size,points_json FROM draw_events WHERE participant_id=? AND stroke_id=? ORDER BY part_index DESC LIMIT 1').get(participantId,c.strokeId) as {part_index:number;final:number;tool:string;color_id:number;size:number;points_json:string}|undefined;
+    const prior = this.stmtLastStrokePart.get(participantId,c.strokeId) as {part_index:number;final:number;tool:string;color_id:number;size:number;points_json:string}|undefined;
     if (!prior && (c.partIndex !== 0 || c.points.length === 0)) return reject('PART_OUT_OF_ORDER');
     if (prior) {
       if (prior.final) return reject('STROKE_CLOSED');
@@ -147,11 +165,11 @@ export class Store {
     let seq: number;
     try {
       if (!this.batching) this.db.exec('BEGIN IMMEDIATE');
-      const last = this.db.prepare('SELECT created_at FROM draw_events ORDER BY seq DESC LIMIT 1').get() as {created_at:string}|undefined;
+      const last = this.stmtLastCreatedAt.get() as {created_at:string}|undefined;
       const now = new Date().toISOString(), created = last && last.created_at > now ? last.created_at : now;
       const pointsJson = JSON.stringify(c.points);
       const insertStarted = timings ? performance.now() : 0;
-      const result = this.db.prepare('INSERT INTO draw_events(op_id,participant_id,stroke_id,part_index,final,tool,color_id,size,points_json,command_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(c.opId,participantId,c.strokeId,c.partIndex,Number(c.final),c.tool,c.colorId,c.size,pointsJson,canonical,created);
+      const result = this.stmtInsertDrawEvent.run(c.opId,participantId,c.strokeId,c.partIndex,Number(c.final),c.tool,c.colorId,c.size,pointsJson,canonical,created);
       if (timings) timings.sqliteInsertMs += performance.now() - insertStarted;
       seq = Number(result.lastInsertRowid); if (!this.batching) this.db.exec('COMMIT');
     } catch (error) { if (this.batching) throw error; try { this.db.exec('ROLLBACK'); } catch {} return reject('STORAGE_UNAVAILABLE'); }

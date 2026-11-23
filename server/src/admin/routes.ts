@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { Server } from 'socket.io';
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { writeFile, rename, readFile, mkdir, readdir, realpath, stat } from 'node:fs/promises';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { writeFile, rename, readFile, mkdir, readdir, realpath, stat, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import {baseImagePath} from '../database/base-image';
 import sharp from 'sharp';
 import { validPalette } from '../../../shared/palette';
@@ -27,11 +28,12 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
   }, 60_000);
   cleanup.unref();
   app.addHook('onClose', async () => { clearInterval(cleanup); });
+  const scryptAsync = promisify(scrypt);
   const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
-  const verify=(password:string) => {
+  const verify=async (password:string):Promise<boolean> => {
     const [salt,digest] = (options.passwordHash || '').split(':');
     if (!salt || !/^[a-f0-9]{32}$/i.test(salt) || !digest || !/^[a-f0-9]{128}$/i.test(digest)) return false;
-    const actual=scryptSync(password,Buffer.from(salt,'hex'),64); return timingSafeEqual(actual,Buffer.from(digest,'hex'));
+    const actual=(await scryptAsync(password,Buffer.from(salt,'hex'),64)) as Buffer; return timingSafeEqual(actual,Buffer.from(digest,'hex'));
   };
   const authorized=(token:string|undefined) => { if (!token) return false; const expiry=sessions.get(hash(token)); return !!expiry && expiry>Date.now(); };
   app.addHook('preHandler',async (req,reply)=>{ if (req.url.startsWith('/api/admin/') && req.url.split('?')[0] !== '/api/admin/login' && !authorized(req.cookies.art_admin)) return reply.code(401).send({error:'UNAUTHENTICATED'}); });
@@ -41,7 +43,7 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
   app.post('/api/admin/login',async (req,reply)=>{
     const attempt=attempts.get(req.ip); if(attempt && attempt.until>Date.now() && attempt.count>=5) return reply.code(429).send({error:'RATE_LIMITED'});
     const password=(req.body as {password?:unknown})?.password;
-    if(typeof password !== 'string' || password.length>512 || !verify(password)) { const current=attempt && attempt.until>Date.now() ? attempt : {count:0,until:Date.now()+15*60_000}; current.count++; attempts.set(req.ip,current); return reply.code(401).send({error:'INVALID_CREDENTIALS'}); }
+    if(typeof password !== 'string' || password.length>512 || !(await verify(password))) { const latest=attempts.get(req.ip); const current=latest && latest.until>Date.now() ? latest : {count:0,until:Date.now()+15*60_000}; current.count++; attempts.set(req.ip,current); return reply.code(401).send({error:'INVALID_CREDENTIALS'}); }
     attempts.delete(req.ip); const token=randomBytes(32).toString('hex'); sessions.set(hash(token),Date.now()+8*60*60_000); reply.setCookie('art_admin',token,{httpOnly:true,secure:options.secureCookie,sameSite:'strict',path:'/api/admin',maxAge:8*60*60}); return {ok:true};
   });
   app.post('/api/admin/logout',async (req,reply)=>{ if(req.cookies.art_admin) sessions.delete(hash(req.cookies.art_admin)); reply.clearCookie('art_admin',{path:'/api/admin'}); return {ok:true}; });
@@ -63,7 +65,15 @@ export function registerAdmin(app:FastifyInstance,store:Store,io:Server,options:
       await writeFile(temp,req.body,{mode:0o600,flag:'wx'}); await rename(temp,path);
       // Another request could open the project while the PNG is being decoded.
       const result=store.db.prepare("UPDATE project SET base_image_path=?,base_image_checksum=? WHERE id=1 AND status='draft'").run(name,digest);
-      if(!result.changes) return reply.code(409).send({error:'PROJECT_LOCKED'});
+      if(!result.changes) {
+        const current=store.db.prepare('SELECT base_image_path FROM project WHERE id=1').get() as {base_image_path:string|null}|undefined;
+        let isActive=current?.base_image_path===name || current?.base_image_path===path;
+        if(!isActive && current?.base_image_path) {
+          try { isActive=baseImagePath(options.dbPath,current.base_image_path)===resolve(path); } catch { /* ignore invalid stored path */ }
+        }
+        if(!isActive) await unlink(path).catch(()=>{});
+        return reply.code(409).send({error:'PROJECT_LOCKED'});
+      }
       return {ok:true,checksum:digest};
   });
   app.get('/api/admin/config',async(_req,reply)=>{
