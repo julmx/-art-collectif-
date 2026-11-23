@@ -69,9 +69,17 @@ it('annule les tracés du participant sans effacer ceux des autres', async () =>
     const draw=async (socket:Socket,colorId:number,points:number[][])=>socket.emitWithAck('draw:submit',{opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'brush',colorId,size:1,points});
     expect((await draw(sockets[0],1,[[4,5],[5,5]])).accepted).toBe(true);
     expect((await draw(sockets[1],2,[[5,5]])).accepted).toBe(true);
-    const reset=new Promise<any>(resolve=>sockets[1].once('canvas:reset',resolve));
+    const resetSelf=new Promise<any>(resolve=>sockets[0].once('canvas:reset',resolve));
+    const resetOther=new Promise<any>(resolve=>sockets[1].once('canvas:reset',resolve));
     expect(await sockets[0].timeout(15000).emitWithAck('draw:undo')).toEqual({ok:true});
-    const state=await reset; expect(state.grid[5*720+4]).toBe(0); expect(state.grid[5*720+5]).toBe(2);
+    const stateSelf=await resetSelf, state=await resetOther;
+    expect(stateSelf.preserveLocalStroke).toBeFalsy();
+    expect(state.preserveLocalStroke).toBe(true);
+    expect('participantId' in stateSelf).toBe(false);
+    expect('participantId' in state).toBe(false);
+    expect(state.grid).toBeInstanceOf(Uint8Array);
+    expect(state.grid.length).toBe(WIDTH * HEIGHT);
+    expect(state.grid[5*720+4]).toBe(0); expect(state.grid[5*720+5]).toBe(2);
     expect(await sockets[1].emitWithAck('draw:undo')).toEqual({ok:false,code:'RATE_LIMITED'});
 
     now += 1000;
@@ -142,6 +150,123 @@ it('regroupe les resynchronisations et déconnecte un transport dont la file res
   } finally {
     clearInterval(spam);
     sockets.forEach(socket => socket.disconnect());
+    await app.close();
+    rmSync(dir, {recursive:true, force:true});
+  }
+}, 15000);
+
+it('refuse draw:undo si le projet cesse d’être ouvert ou si le participant est banni pendant la reconstruction', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-undo-race-'));
+  const origin = 'http://localhost:4173';
+  const {app, store} = await createApp({dbPath:join(dir, 'db.sqlite'), origin, secureCookie:false});
+  let socket: Socket | undefined;
+  let now = performance.now();
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    await app.listen({port:0, host:'127.0.0.1'});
+    const address = app.server.address();
+    if (!address || typeof address === 'string') throw new Error('address');
+    store.db.prepare("UPDATE project SET status='open'").run();
+    const session = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+    socket = client(`http://127.0.0.1:${address.port}`, {
+      extraHeaders:{cookie:session.headers['set-cookie'] as string, origin},
+      transports:['websocket'],
+      autoConnect:false,
+    });
+    const ready = new Promise<void>(resolve => socket!.once('canvas:state', () => resolve()));
+    socket.connect();
+    await ready;
+    const ack = await socket.emitWithAck('draw:submit', {
+      opId:randomUUID(), strokeId:randomUUID(), partIndex:0, final:true, tool:'pixel', colorId:1, size:1, points:[[3,3]],
+    });
+    expect(ack).toMatchObject({accepted:true, seq:1});
+
+    const originalValidate = store.validateModeration.bind(store);
+    const validateSpy = vi.spyOn(store, 'validateModeration').mockImplementationOnce((strokes, action, reason) => {
+      originalValidate(strokes, action, reason);
+      store.db.prepare("UPDATE project SET status='paused'").run();
+    });
+    expect(await socket.timeout(15000).emitWithAck('draw:undo')).toEqual({ok:false, code:'UNAVAILABLE'});
+    expect(store.revision()).toBe(0);
+    expect(store.grid[3 * WIDTH + 3]).toBe(1);
+
+    // Reopen project and simulate participant ban during rebuild.
+    store.db.prepare("UPDATE project SET status='open'").run();
+    now += 5000;
+    const participant = store.db.prepare('SELECT id FROM participants LIMIT 1').get() as {id:string};
+    validateSpy.mockImplementationOnce((strokes, action, reason) => {
+      originalValidate(strokes, action, reason);
+      store.sanction(participant.id, 'ban', 'test');
+    });
+    expect(await socket.timeout(15000).emitWithAck('draw:undo')).toEqual({ok:false, code:'UNAVAILABLE'});
+    expect(store.revision()).toBe(0);
+    expect(store.grid[3 * WIDTH + 3]).toBe(1);
+    validateSpy.mockRestore();
+  } finally {
+    clock.mockRestore();
+    socket?.disconnect();
+    await app.close();
+    rmSync(dir, {recursive:true, force:true});
+  }
+}, 20000);
+
+it('limite la création de nouvelles sessions par IP sans bloquer une session existante', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-session-rate-'));
+  const origin = 'http://localhost:4173';
+  let now = 10_000;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const {app} = await createApp({dbPath:join(dir, 'db.sqlite'), origin, secureCookie:false});
+  try {
+    let validCookie = '';
+    for (let i = 0; i < 120; i++) {
+      const res = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+      expect(res.statusCode).toBe(200);
+      if (i === 0) validCookie = (res.headers['set-cookie'] as string).split(';')[0];
+    }
+    // 121st new session exceeds burst limit.
+    const blocked = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json()).toEqual({error:'RATE_LIMITED'});
+
+    // Existing valid session does not consume tokens and still passes.
+    const existing = await app.inject({method:'POST', url:'/api/session', headers:{origin, cookie:validCookie}});
+    expect(existing.statusCode).toBe(200);
+    expect(existing.json()).toEqual({ok:true});
+
+    // After 500 ms (2/s refill), 1 new session is allowed again.
+    now += 500;
+    const refilled = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+    expect(refilled.statusCode).toBe(200);
+  } finally {
+    clock.mockRestore();
+    await app.close();
+    rmSync(dir, {recursive:true, force:true});
+  }
+}, 15000);
+
+it('libère queuedBytes lors d’un upgrade de transport polling vers websocket', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-upgrade-'));
+  const origin = 'http://localhost:4173';
+  const {app, io} = await createApp({dbPath:join(dir, 'db.sqlite'), origin, secureCookie:false});
+  let socket: Socket | undefined;
+  try {
+    await app.listen({port:0, host:'127.0.0.1'});
+    const address = app.server.address();
+    if (!address || typeof address === 'string') throw new Error('address');
+    const session = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+    socket = client(`http://127.0.0.1:${address.port}`, {
+      extraHeaders:{cookie:session.headers['set-cookie'] as string, origin},
+      transports:['polling', 'websocket'],
+      autoConnect:false,
+    });
+    const ready = new Promise<void>(resolve => socket!.once('canvas:state', () => resolve()));
+    socket.connect();
+    await ready;
+    const peer = io.sockets.sockets.get(socket.id!)!;
+    await expect.poll(() => peer.conn.transport.name, {timeout:5000}).toBe('websocket');
+    await expect.poll(() => peer.data.queuedBytes, {timeout:5000}).toBe(0);
+  } finally {
+    socket?.disconnect();
     await app.close();
     rmSync(dir, {recursive:true, force:true});
   }
