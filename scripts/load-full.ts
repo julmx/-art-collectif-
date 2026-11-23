@@ -25,7 +25,7 @@ try {
  for(let i=0;i<50;i++){
   const session=await fetch(`${url}/api/session`,{method:'POST',headers:{origin:'http://localhost:4173'}}),cookie=session.headers.get('set-cookie') || '';if(!session.ok||!cookie)throw new Error('Session refusée');
   const socket=makeClient(url,{extraHeaders:{cookie,origin:'http://localhost:4173'},transports:['websocket'],autoConnect:false});const monitor:Monitor={socket,grid:new Uint8Array(WIDTH*HEIGHT),seq:0,revision:0,ready:false,gaps:0};clients.push(monitor);
-  socket.on('canvas:state',(state:{grid:number[];seq:number;moderationRevision:number})=>{monitor.grid=Uint8Array.from(state.grid);monitor.seq=state.seq;monitor.revision=state.moderationRevision;monitor.ready=true;});
+  socket.on('canvas:state',(state:{grid:ArrayBuffer|Uint8Array|number[];seq:number;moderationRevision:number})=>{monitor.grid=state.grid instanceof ArrayBuffer ? new Uint8Array(state.grid) : Uint8Array.from(state.grid);monitor.seq=state.seq;monitor.revision=state.moderationRevision;monitor.ready=true;});
   socket.on('draw:applied',(update:{seq:number;moderationRevision:number;changes:[number,number][]})=>{if(!monitor.ready)return;if(update.seq<=monitor.seq)return;if(update.seq!==monitor.seq+1||update.moderationRevision!==monitor.revision){monitor.ready=false;monitor.gaps++;socket.emit('canvas:resync');return;}for(const [index,color] of update.changes)monitor.grid[index]=color;monitor.seq=update.seq;});
   socket.on('disconnect',()=>{monitor.ready=false;});const ready=new Promise<void>((ok,fail)=>{socket.once('canvas:state',()=>ok());socket.once('connect_error',fail);});socket.connect();await ready;
  }

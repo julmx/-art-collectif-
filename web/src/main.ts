@@ -13,6 +13,19 @@ app.innerHTML = `<header><a class="brand" href="#"><span class="brand-mark">✳<
 <footer><span>ART COLLECTIF ©</span><button id="info">À propos & participation ↗</button></footer></main><dialog id="about"><form method="dialog"><button class="close" aria-label="Fermer">×</button></form><span class="eyebrow">À PROPOS</span><h2>Une œuvre en mouvement.</h2><p id="project-description"></p><p id="project-terms"></p></dialog>`;
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!, viewport = document.querySelector<HTMLElement>('#viewport')!;
 const ctx = canvas.getContext('2d')!;
+const frameImage = ctx.createImageData(WIDTH, HEIGHT);
+const checker = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+for (let i = 0; i < WIDTH * HEIGHT; i++) {
+  const x = i % WIDTH, y = (i / WIDTH) | 0;
+  const v = (((x / 48) | 0) + ((y / 48) | 0)) % 2 ? 239 : 246;
+  const o = i * 4;
+  checker[o] = v;
+  checker[o + 1] = v;
+  checker[o + 2] = v;
+  checker[o + 3] = 255;
+  frameImage.data[o + 3] = 255;
+}
+const paletteRgb = new Uint8Array(25 * 3);
 let available = false;
 let colors: readonly string[] = PALETTE; let base: Uint8ClampedArray | null = null; let previousStatus='';
 const actionStatus = document.querySelector<HTMLElement>('#undo-status')!;
@@ -41,6 +54,8 @@ function flushStroke(final = false) {
     }
     if (!client.submit(command)) {
       stroke = null;
+      drawingId = null;
+      last = null;
       actionStatus.textContent = 'Le tracé a été interrompu. Les parties déjà acceptées sont conservées.';
       return;
     }
@@ -52,7 +67,22 @@ function finishStroke() { if (stroke) { if (stroke.lastSent && stroke.points.len
 const pointers = new Map<number, {x:number;y:number}>();
 let gesture: {x:number;y:number;distance:number;zoom:number;ox:number;oy:number} | null = null;
 const palette = document.querySelector<HTMLElement>('#palette')!, sizes = document.querySelector<HTMLElement>('#sizes')!;
-function updatePalette() { palette.replaceChildren(); colors.forEach((hex, i) => { const button = document.createElement('button'); button.style.background = hex; button.title = `Couleur ${i + 1}`; button.setAttribute('aria-label', button.title); button.setAttribute('aria-pressed', String(i + 1 === color)); button.addEventListener('click', () => { color = i + 1; palette.querySelectorAll('button').forEach((b, n) => b.setAttribute('aria-pressed', String(n === i))); }); palette.append(button); }); }
+function updatePalette() {
+  palette.replaceChildren();
+  colors.forEach((hex, i) => {
+    const rgbOffset = (i + 1) * 3;
+    paletteRgb[rgbOffset] = parseInt(hex.slice(1, 3), 16);
+    paletteRgb[rgbOffset + 1] = parseInt(hex.slice(3, 5), 16);
+    paletteRgb[rgbOffset + 2] = parseInt(hex.slice(5, 7), 16);
+    const button = document.createElement('button');
+    button.style.background = hex;
+    button.title = `Couleur ${i + 1}`;
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(i + 1 === color));
+    button.addEventListener('click', () => { color = i + 1; palette.querySelectorAll('button').forEach((b, n) => b.setAttribute('aria-pressed', String(n === i))); });
+    palette.append(button);
+  });
+}
 updatePalette();
 SIZES.forEach(n => { const button = document.createElement('button'); button.textContent = String(n); button.setAttribute('aria-pressed', String(n === size)); button.addEventListener('click', () => { size = n; sizes.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === button))); }); sizes.append(button); });
 document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach(button => button.addEventListener('click', () => { tool = button.dataset.tool as typeof tool; document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b === button))); viewport.classList.toggle('panning', tool === 'pan'); finishStroke(); }));
@@ -66,13 +96,29 @@ function paint() {
   paintPending = false;
   const grid = client.displayGrid();
   if (stroke?.points.length) applyCells(grid, paintBrush(stroke.points,stroke.size,stroke.color));
-  const image = ctx.createImageData(WIDTH, HEIGHT); for (let i = 0; i < grid.length; i++) { const c = grid[i], x = i % WIDTH, y = Math.floor(i / WIDTH); const v = ((Math.floor(x / 48) + Math.floor(y / 48)) % 2) ? 239 : 246; const hex = c ? colors[c - 1] : null; image.data[i*4] = hex ? parseInt(hex.slice(1,3),16) : (base?.[i*4] ?? v); image.data[i*4+1] = hex ? parseInt(hex.slice(3,5),16) : (base?.[i*4+1] ?? v); image.data[i*4+2] = hex ? parseInt(hex.slice(5,7),16) : (base?.[i*4+2] ?? v); image.data[i*4+3] = 255; } ctx.putImageData(image,0,0); }
+  const data = frameImage.data;
+  const fallback = base ?? checker;
+  for (let i = 0, o = 0; i < grid.length; i++, o += 4) {
+    const c = grid[i];
+    if (c > 0 && c <= 24) {
+      const p = c * 3;
+      data[o] = paletteRgb[p];
+      data[o + 1] = paletteRgb[p + 1];
+      data[o + 2] = paletteRgb[p + 2];
+    } else {
+      data[o] = fallback[o];
+      data[o + 1] = fallback[o + 1];
+      data[o + 2] = fallback[o + 2];
+    }
+  }
+  ctx.putImageData(frameImage,0,0);
+}
 function transform() { canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`; document.querySelector('#zoom-label')!.textContent = `${Math.round(zoom * 100)} %`; }
 function cell(e: PointerEvent): Point | null { const r = canvas.getBoundingClientRect(); const x = Math.floor((e.clientX-r.left)*WIDTH/r.width), y = Math.floor((e.clientY-r.top)*HEIGHT/r.height); return x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT ? [x,y] : null; }
 function draw(p: Point) { if (!stroke) return; if (last && p[0] === last[0] && p[1] === last[1]) return; stroke.points.push(p); last=p; render(); if (stroke.points.length >= DRAW_PART_POINTS) flushStroke(); }
 function startGesture() { restartId=null; const values = [...pointers.values()]; if (values.length < 2) return; const [a,b] = values; gesture = {x:(a.x+b.x)/2,y:(a.y+b.y)/2,distance:Math.hypot(a.x-b.x,a.y-b.y) || 1,zoom,ox:offsetX,oy:offsetY}; finishStroke(); }
 function beginStroke(id:number,p:Point) { drawingId=id; restartId=null; stroke={id:crypto.randomUUID(),part:0,points:[],lastSent:null,tool:'brush',color,size}; draw(p); }
-viewport.addEventListener('pointerdown', e => { e.preventDefault(); viewport.setPointerCapture(e.pointerId); pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (pointers.size >= 2) { startGesture(); return; } if (tool === 'pan') { gesture = {x:e.clientX,y:e.clientY,distance:1,zoom,ox:offsetX,oy:offsetY}; return; } const p = cell(e); if (p && available) beginStroke(e.pointerId,p); });
+viewport.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' && e.button !== 0) return; e.preventDefault(); viewport.setPointerCapture(e.pointerId); pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (pointers.size >= 2) { startGesture(); return; } if (tool === 'pan') { gesture = {x:e.clientX,y:e.clientY,distance:1,zoom,ox:offsetX,oy:offsetY}; return; } const p = cell(e); if (p && available) beginStroke(e.pointerId,p); });
 viewport.addEventListener('pointermove', e => { if (!pointers.has(e.pointerId)) return; pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (gesture && pointers.size >= 2) { const [a,b] = [...pointers.values()]; offsetX = gesture.ox + (a.x+b.x)/2-gesture.x; offsetY = gesture.oy + (a.y+b.y)/2-gesture.y; zoom = Math.max(.5,Math.min(4,gesture.zoom * Math.hypot(a.x-b.x,a.y-b.y)/gesture.distance)); transform(); } else if (gesture && tool === 'pan' && pointers.size === 1) { offsetX = gesture.ox+e.clientX-gesture.x; offsetY = gesture.oy+e.clientY-gesture.y; transform(); } else if (drawingId === e.pointerId) { const p = cell(e); if (p) draw(p); else { finishStroke(); restartId=e.pointerId; } } else if (restartId === e.pointerId && pointers.size===1 && available && tool !== 'pan') { const p=cell(e); if(p) beginStroke(e.pointerId,p); } });
 function end(e: PointerEvent) { if(restartId===e.pointerId)restartId=null; pointers.delete(e.pointerId); if (drawingId === e.pointerId) finishStroke(); gesture = null; if (pointers.size >= 2) startGesture(); }
 viewport.addEventListener('pointerup',end); viewport.addEventListener('pointercancel',end); viewport.addEventListener('lostpointercapture',end);

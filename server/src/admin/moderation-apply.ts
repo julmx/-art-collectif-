@@ -1,4 +1,5 @@
 import {spawn} from 'node:child_process';
+import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setImmediate as yieldToIO} from 'node:timers/promises';
 import {WIDTH,HEIGHT} from '../../../shared/raster';
@@ -8,7 +9,7 @@ const busy=new WeakSet<Store>();
 const REBUILD_TIMEOUT_MS = 120_000;
 const REPLAY_CHUNK_SIZE = 16;
 
-export async function applyModeration(store:Store, dbPath:string, strokes:{participantId:string;strokeId:string}[], action:'hide'|'restore', reason:string, expectedSeq:number, expectedRevision:number, options:{requireUnchangedSequence?:boolean} = {}):Promise<number> {
+export async function applyModeration(store:Store, dbPath:string, strokes:{participantId:string;strokeId:string}[], action:'hide'|'restore', reason:string, expectedSeq:number, expectedRevision:number, options:{requireUnchangedSequence?:boolean; validateBeforeCommit?: () => boolean} = {}):Promise<number> {
   store.validateModeration(strokes,action,reason);
   if(store.seq!==expectedSeq || store.revision()!==expectedRevision) throw new Error('MODERATION_STATE_CHANGED');
   if(busy.has(store))throw new Error('MODERATION_BUSY');
@@ -17,7 +18,8 @@ export async function applyModeration(store:Store, dbPath:string, strokes:{parti
   const deadline = performance.now() + REBUILD_TIMEOUT_MS;
   const decisions = strokes.map(stroke => ({...stroke, action}));
   const encoded=Buffer.from(JSON.stringify(decisions)).toString('base64url');
-  const worker=spawn('nice',['-n','10',process.execPath,'--max-old-space-size=256','--import','tsx',fileURLToPath(new URL('../../../scripts/moderation-rebuild.ts',import.meta.url)),dbPath,String(expectedSeq),String(expectedRevision),encoded],{stdio:['ignore','pipe','pipe']});
+  const snapshotDirectory = join(dirname(dbPath), 'snapshots');
+  const worker=spawn('nice',['-n','10',process.execPath,'--max-old-space-size=256','--import','tsx',fileURLToPath(new URL('../../../scripts/moderation-rebuild.ts',import.meta.url)),dbPath,String(expectedSeq),String(expectedRevision),encoded,snapshotDirectory],{stdio:['ignore','pipe','pipe']});
   const chunks:Buffer[]=[];let size=0,error='';
   worker.stdout.on('data',(chunk:Buffer)=>{size+=chunk.length;if(size>WIDTH*HEIGHT)worker.kill('SIGKILL');else chunks.push(chunk);});
   worker.stderr.on('data',chunk=>{error=(error+String(chunk)).slice(-2000);});
@@ -36,7 +38,10 @@ export async function applyModeration(store:Store, dbPath:string, strokes:{parti
       throw new Error('MODERATION_STATE_CHANGED');
     }
     if (performance.now() >= deadline) throw new Error('MODERATION_BUSY');
-    if (appliedSeq === store.seq) return store.commitModeration(strokes, action, reason, grid);
+    if (appliedSeq === store.seq) {
+      if (options.validateBeforeCommit && !options.validateBeforeCommit()) throw new Error('MODERATION_UNAVAILABLE');
+      return store.commitModeration(strokes, action, reason, grid);
+    }
 
     const target = Math.min(store.seq, appliedSeq + REPLAY_CHUNK_SIZE);
     store.replayInto(grid, appliedSeq, target, isHidden);

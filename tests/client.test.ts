@@ -73,3 +73,107 @@ it.each(['RATE_LIMITED', 'STORAGE_UNAVAILABLE', 'timeout'])('respecte le délai 
     expect(mocks.socket.sent.map(s => s.command)).toEqual([command, command, next]);
   } finally { vi.useRealTimers(); }
 });
+
+it('décode les états binaires ArrayBuffer, Uint8Array et Buffer et rejette les tailles invalides', async () => {
+  const client = new CollaborationClient(() => {});
+  await client.connect();
+  const disconnect = vi.spyOn(mocks.socket, 'disconnect');
+
+  const u8 = new Uint8Array(720 * 480);
+  u8[721] = 7;
+  mocks.socket.handlers.get('canvas:state')?.({...state(1), grid:u8});
+  expect(client.displayGrid()[721]).toBe(7);
+
+  const ab = new ArrayBuffer(720 * 480);
+  new Uint8Array(ab)[722] = 9;
+  mocks.socket.handlers.get('canvas:state')?.({...state(2), grid:ab});
+  expect(client.displayGrid()[722]).toBe(9);
+
+  const buf = Buffer.alloc(720 * 480);
+  buf[723] = 5;
+  mocks.socket.handlers.get('canvas:state')?.({...state(3), grid:buf});
+  expect(client.displayGrid()[723]).toBe(5);
+
+  mocks.socket.handlers.get('canvas:state')?.({...state(4), grid:new ArrayBuffer(10)});
+  expect(disconnect).toHaveBeenCalledTimes(1);
+});
+
+it('préserve l’aperçu local lors d’un canvas:reset avec preserveLocalStroke et l’efface sinon', async () => {
+  const resets: boolean[] = [];
+  const client = new CollaborationClient((_available, _status, _palette, reset) => { resets.push(reset); });
+  await client.connect();
+  mocks.socket.handlers.get('canvas:state')?.(state());
+  client.submit(command);
+  expect(client.displayGrid()[721]).toBe(1);
+
+  resets.length = 0;
+  mocks.socket.handlers.get('canvas:reset')?.({...state(), moderationRevision:1, preserveLocalStroke:true});
+  expect(resets.at(-1)).toBe(false);
+  expect(client.displayGrid()[721]).toBe(1);
+
+  resets.length = 0;
+  mocks.socket.handlers.get('canvas:reset')?.({...state(), moderationRevision:2});
+  expect(resets.at(-1)).toBe(true);
+  expect(client.displayGrid()[721]).toBe(0);
+});
+
+it('bloque submit() si le participant est banni et notifie avant canvas:resync sur changement invalide', async () => {
+  const order: string[] = [];
+  const client = new CollaborationClient((available) => { order.push(`changed:${available}`); });
+  await client.connect();
+  mocks.socket.handlers.get('canvas:state')?.(state());
+
+  const originalEmit = mocks.socket.emit;
+  mocks.socket.emit = (name, ...args) => {
+    order.push(`emit:${name}`);
+    originalEmit(name, ...args);
+  };
+  order.length = 0;
+  mocks.socket.handlers.get('draw:applied')?.({seq:1, moderationRevision:0, changes:[[9999999, 1]]});
+  expect(order).toEqual(['changed:false', 'emit:canvas:resync']);
+
+  mocks.socket.handlers.get('canvas:state')?.(state(1));
+  mocks.socket.handlers.get('participant:restriction')?.({banned:true});
+  expect(client.submit(command)).toBe(false);
+  expect(mocks.socket.sent).toHaveLength(0);
+});
+
+it.each([
+  {code: 'RATE_LIMITED', expected: 'RATE_LIMITED'},
+  {code: 'timeout', expected: 'ACK_TIMEOUT'},
+])('applique un backoff exponentiel borné à 6 tentatives puis abandonne le trait (%s)', async ({code, expected}) => {
+  vi.useFakeTimers();
+  try {
+    const refused = vi.fn();
+    const client = new CollaborationClient(() => {}, refused);
+    await client.connect();
+    mocks.socket.handlers.get('canvas:state')?.(state());
+
+    const part2 = {...command, opId:'a2', partIndex:1};
+    const other = {...command, opId:'c', strokeId:'d'};
+    client.submit(command);
+    client.submit(part2);
+    client.submit(other);
+
+    const delays = [1000, 2000, 4000, 8000, 16000];
+    for (let i = 0; i < delays.length; i++) {
+      expect(mocks.socket.sent).toHaveLength(i + 1);
+      mocks.socket.sent[i].ack(code === 'timeout' ? new Error(code) : null, code === 'timeout' ? undefined : {accepted:false, code});
+      await vi.advanceTimersByTimeAsync(delays[i] - 1);
+      expect(mocks.socket.sent).toHaveLength(i + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.socket.sent).toHaveLength(i + 2);
+      expect(mocks.socket.sent[i + 1].command).toEqual(command);
+    }
+
+    // 6th attempt fails -> abandon stroke (command + part2) and flush next stroke (other).
+    mocks.socket.sent[5].ack(code === 'timeout' ? new Error(code) : null, code === 'timeout' ? undefined : {accepted:false, code});
+    expect(refused).toHaveBeenCalledTimes(1);
+    expect(refused).toHaveBeenCalledWith(command, expected);
+    expect(mocks.socket.sent).toHaveLength(7);
+    expect(mocks.socket.sent[6].command).toEqual(other);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.socket.sent).toHaveLength(7);
+  } finally { vi.useRealTimers(); }
+});

@@ -11,13 +11,15 @@ import { dirname, join } from 'node:path';
 import { Snapshots } from './renderer/snapshots';
 import { applyModeration } from './admin/moderation-apply';
 
-const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+const MAX_QUEUED_BYTES = 1_500_000;
 const MAX_DRAW_QUEUE_DEPTH = 1000;
 const RESYNC_INTERVAL_MS = 1000;
 const UNDO_PARTICIPANT_INTERVAL_MS = 3000;
 const UNDO_REBUILD_PAUSE_MS = 1000;
-// Each grid entry has at most two digits and one separator. Allow room for metadata and framing.
-const FULL_STATE_BYTES = WIDTH * HEIGHT * 3 + 2048;
+const SESSION_BUCKET_CAPACITY = 120;
+const SESSION_BUCKET_REFILL_PER_MS = 2 / 1000;
+// Binary grid payload plus metadata and framing overhead.
+const FULL_STATE_BYTES = WIDTH * HEIGHT + 2048;
 
 type DrawLimitReason = 'participant' | 'queue';
 
@@ -45,7 +47,9 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   store.grid=store.replay(store.seq,'moderated',store.revision(),snapshot ?? undefined);
   snapshots.resetBaseline(snapshot);
   const nextUndoByParticipant = new Map<string, number>();
+  const sessionBuckets = new Map<string, { tokens: number; time: number }>();
   let nextUndoRebuildAt = 0;
+  let lastSnapshotTriggerSeq = snapshot?.seq ?? 0;
   let snapshotWork: Promise<void> = Promise.resolve(), snapshotPending=false;
   const scheduleSnapshot = () => { if(snapshotPending)return; snapshotPending=true; snapshotWork=snapshots.saveIfDue().catch(error=>app.log.error(error,'snapshot failed')).finally(()=>{snapshotPending=false;}); };
   const timer = setInterval(() => {
@@ -53,6 +57,11 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     const now = performance.now();
     for (const [participantId, nextUndoAt] of nextUndoByParticipant) {
       if (nextUndoAt <= now) nextUndoByParticipant.delete(participantId);
+    }
+    for (const [ip, bucket] of sessionBuckets) {
+      if (bucket.tokens + Math.max(0, now - bucket.time) * SESSION_BUCKET_REFILL_PER_MS >= SESSION_BUCKET_CAPACITY) {
+        sessionBuckets.delete(ip);
+      }
     }
   }, 30_000);
   timer.unref();
@@ -64,11 +73,26 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   app.get('/api/project', async () => { const row = store.db.prepare('SELECT status,palette_json,title,description,participation_terms FROM project WHERE id=1').get() as {status:string;palette_json:string;title:string;description:string;participation_terms:string}; return {width:WIDTH,height:HEIGHT,status:row.status,palette:JSON.parse(row.palette_json),title:row.title,description:row.description,participationTerms:row.participation_terms}; });
   app.post('/api/session', async (request, reply) => {
     let participant = identity(request.cookies.art_session);
-    if (!participant) { const token = randomBytes(32).toString('hex'), now = new Date().toISOString(); participant = {id:randomUUID()}; store.db.prepare('INSERT INTO participants(id,token_hash,created_at,last_seen_at) VALUES(?,?,?,?)').run(participant.id,hash(token),now,now); reply.setCookie('art_session',token,{httpOnly:true,secure:options.secureCookie !== false,sameSite:'strict',path:'/',maxAge:90*24*60*60}); }
+    if (!participant) {
+      const ip = request.ip, now = performance.now();
+      const bucket = sessionBuckets.get(ip) ?? { tokens: SESSION_BUCKET_CAPACITY, time: now };
+      bucket.tokens = Math.min(SESSION_BUCKET_CAPACITY, bucket.tokens + Math.max(0, now - bucket.time) * SESSION_BUCKET_REFILL_PER_MS);
+      bucket.time = now;
+      if (bucket.tokens < 1) {
+        sessionBuckets.set(ip, bucket);
+        return reply.code(429).send({ error: 'RATE_LIMITED' });
+      }
+      bucket.tokens -= 1;
+      sessionBuckets.set(ip, bucket);
+      const token = randomBytes(32).toString('hex'), created = new Date().toISOString();
+      participant = {id:randomUUID()};
+      store.db.prepare('INSERT INTO participants(id,token_hash,created_at,last_seen_at) VALUES(?,?,?,?)').run(participant.id,hash(token),created,created);
+      reply.setCookie('art_session',token,{httpOnly:true,secure:options.secureCookie !== false,sameSite:'strict',path:'/',maxAge:90*24*60*60});
+    }
     return {ok:true};
   });
   io.use((socket,next) => { if (!store.healthy) return next(new Error('STORAGE_UNAVAILABLE')); const raw = socket.handshake.headers.cookie || ''; const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith('art_session='))?.slice('art_session='.length); const participant = identity(token); if (!participant) return next(new Error('UNAUTHENTICATED')); try { store.db.prepare('UPDATE participants SET last_seen_at=? WHERE id=?').run(new Date().toISOString(),participant.id); } catch {return next(new Error('STORAGE_UNAVAILABLE'));} socket.data.participantId = participant.id; next(); });
-  function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Array.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
+  function state() { const p = store.db.prepare('SELECT status,palette_json,moderation_revision FROM project WHERE id=1').get() as {status:string;palette_json:string;moderation_revision:number}; return {width:WIDTH,height:HEIGHT,grid:Buffer.from(store.grid),palette:JSON.parse(p.palette_json) as typeof PALETTE,seq:store.seq,moderationRevision:p.moderation_revision,status:p.status}; }
   function reserveCanvasBytes(socket: Socket, bytes: number): boolean {
     const queued = Number(socket.data.queuedBytes) + bytes;
     if (queued > MAX_QUEUED_BYTES) {
@@ -86,6 +110,14 @@ export async function createApp(options: { dbPath: string; origin: string; secur
     return state();
   }
   const resetCanvas = () => io.emit('canvas:reset',prepareResetState());
+  function resetCanvasForUndo(undoParticipantId: string) {
+    const baseState = state();
+    const preservedState = { ...baseState, preserveLocalStroke: true };
+    for (const peer of io.sockets.sockets.values()) {
+      if (!reserveCanvasBytes(peer, FULL_STATE_BYTES)) continue;
+      peer.emit('canvas:reset', peer.data.participantId === undoParticipantId ? baseState : preservedState);
+    }
+  }
   registerAdmin(app,store,io,{dataDir:dirname(options.dbPath),dbPath:options.dbPath,passwordHash:options.adminPasswordHash,secureCookie:options.secureCookie !== false,state:prepareResetState});
   type Queued = {participantId:string;input:unknown;ack:(value:unknown)=>void};
   const queue:Queued[]=[];let flushTimer:NodeJS.Timeout|undefined;
@@ -118,7 +150,6 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       for(let i=0;i<batch.length;i++){
         const {result,changes:cells}=results[i];batch[i].ack(result);
         if(!result.accepted||result.duplicate)continue;
-        if(result.seq%500===0)scheduleSnapshot();
         const broadcastStarted = onBatch ? performance.now() : 0;
         if (!cells) {
           resetCanvas();
@@ -127,6 +158,10 @@ export async function createApp(options: { dbPath: string; origin: string; secur
           io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
         }
         if (onBatch) broadcastMs += performance.now() - broadcastStarted;
+      }
+      if (!snapshotPending && store.seq - lastSnapshotTriggerSeq >= 500) {
+        lastSnapshotTriggerSeq = store.seq;
+        scheduleSnapshot();
       }
     } catch(error){
       if (onBatch && !storeEnded) storeEnded = performance.now();
@@ -150,21 +185,33 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   io.on('connection', socket => {
     socket.data.queuedBytes = 0;
     let inFlightBytes = 0;
+    const pendingReleases = new Set<() => void>();
     socket.conn.on('flush', () => {
-      const bytes = socket.data.queuedBytes - inFlightBytes;
-      if (!bytes) return;
+      const bytes = Number(socket.data.queuedBytes) - inFlightBytes;
+      if (bytes <= 0) return;
       inFlightBytes += bytes;
-      const release = () => {
-        inFlightBytes -= bytes;
-        socket.data.queuedBytes -= bytes;
-      };
       const transport = socket.conn.transport;
+      let target: { once: (event: string, listener: () => void) => void; removeListener?: (event: string, listener: () => void) => void } = transport;
+      let event = 'drain';
       // Polling can emit drain immediately after res.end(), before HTTP finishes writing.
       if (transport.name === 'polling' && 'res' in transport && transport.res instanceof ServerResponse) {
-        transport.res.once('finish', release);
-      } else {
-        transport.once('drain', release);
+        target = transport.res;
+        event = 'finish';
       }
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        pendingReleases.delete(release);
+        target.removeListener?.(event, release);
+        inFlightBytes = Math.max(0, inFlightBytes - bytes);
+        socket.data.queuedBytes = Math.max(0, Number(socket.data.queuedBytes) - bytes);
+      };
+      pendingReleases.add(release);
+      target.once(event, release);
+    });
+    socket.conn.on('upgrade', () => {
+      for (const release of [...pendingReleases]) release();
     });
     socket.emit('participant:restriction',{banned:store.isBanned(socket.data.participantId as string)});
     sendState(socket);
@@ -203,7 +250,22 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       if (!row) { reply({ok:false,code:'EMPTY'}); return; }
       // Keep one shared pause after the reconstruction, even when participants alternate.
       nextUndoRebuildAt = Infinity;
-      try { await applyModeration(store,options.dbPath,[{participantId,strokeId:row.stroke_id}],'hide','Annulation par le participant',store.seq,store.revision()); resetCanvas(); reply({ok:true}); }
+      try {
+        await applyModeration(
+          store,
+          options.dbPath,
+          [{participantId,strokeId:row.stroke_id}],
+          'hide',
+          'Annulation par le participant',
+          store.seq,
+          store.revision(),
+          {
+            validateBeforeCommit: () => store.healthy && !store.isBanned(participantId) && (store.db.prepare('SELECT status FROM project WHERE id=1').get() as {status:string}).status === 'open',
+          },
+        );
+        resetCanvasForUndo(participantId);
+        reply({ok:true});
+      }
       catch(error) { app.log.error(error,'undo failed'); if(!store.healthy)io.disconnectSockets(true); reply({ok:false,code:'UNAVAILABLE'}); }
       finally { nextUndoRebuildAt = performance.now() + UNDO_REBUILD_PAUSE_MS; }
     });
