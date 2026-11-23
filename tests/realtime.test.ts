@@ -271,3 +271,53 @@ it('libère queuedBytes lors d’un upgrade de transport polling vers websocket'
     rmSync(dir, {recursive:true, force:true});
   }
 }, 15000);
+
+it('regroupe la diffusion draw:applied par lot en conservant la dernière couleur par cellule', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-batch-broadcast-'));
+  const origin = 'http://localhost:4173';
+  const {app, store} = await createApp({dbPath:join(dir, 'db.sqlite'), origin, secureCookie:false});
+  const sockets: Socket[] = [];
+  try {
+    await app.listen({port:0, host:'127.0.0.1'});
+    const address = app.server.address();
+    if (!address || typeof address === 'string') throw new Error('address');
+    store.db.prepare("UPDATE project SET status='open'").run();
+    for (let i = 0; i < 2; i++) {
+      const session = await app.inject({method:'POST', url:'/api/session', headers:{origin}});
+      const socket = client(`http://127.0.0.1:${address.port}`, {
+        extraHeaders:{cookie:session.headers['set-cookie'] as string, origin},
+        transports:['websocket'],
+        autoConnect:false,
+      });
+      sockets.push(socket);
+      const ready = new Promise<void>(resolve => socket.once('canvas:state', () => resolve()));
+      socket.connect();
+      await ready;
+    }
+
+    const [sender, observer] = sockets;
+    const updates: {fromSeq:number; seq:number; moderationRevision:number; changes:[number,number][]}[] = [];
+    observer.on('draw:applied', update => updates.push(update));
+
+    // Submit 3 commands simultaneously so they land in the same 15ms flush batch,
+    // with two commands painting the same cell (10, 10) with different colors.
+    const acks = await Promise.all([
+      sender.emitWithAck('draw:submit', {opId:randomUUID(), strokeId:randomUUID(), partIndex:0, final:true, tool:'pixel', colorId:1, size:1, points:[[10, 10]]}),
+      sender.emitWithAck('draw:submit', {opId:randomUUID(), strokeId:randomUUID(), partIndex:0, final:true, tool:'pixel', colorId:2, size:1, points:[[11, 10]]}),
+      sender.emitWithAck('draw:submit', {opId:randomUUID(), strokeId:randomUUID(), partIndex:0, final:true, tool:'pixel', colorId:3, size:1, points:[[10, 10]]}),
+    ]);
+    expect(acks.every(a => a.accepted)).toBe(true);
+    await expect.poll(() => updates.at(-1)?.seq).toBe(3);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({fromSeq:1, seq:3, moderationRevision:0});
+    const byIndex = new Map(updates[0].changes);
+    expect(byIndex.size).toBe(2);
+    expect(byIndex.get(10 * WIDTH + 10)).toBe(3);
+    expect(byIndex.get(10 * WIDTH + 11)).toBe(2);
+  } finally {
+    sockets.forEach(s => s.disconnect());
+    await app.close();
+    rmSync(dir, {recursive:true, force:true});
+  }
+}, 15000);

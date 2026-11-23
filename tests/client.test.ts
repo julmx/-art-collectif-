@@ -177,3 +177,56 @@ it.each([
     expect(mocks.socket.sent).toHaveLength(7);
   } finally { vi.useRealTimers(); }
 });
+
+it('applique un lot draw:applied (fromSeq..seq), réconcilie les attentes et resynchronise en cas de trou', async () => {
+  const client = new CollaborationClient(() => {});
+  await client.connect();
+  mocks.socket.handlers.get('canvas:state')?.(state(0));
+
+  const resyncs: string[] = [];
+  const originalEmit = mocks.socket.emit;
+  mocks.socket.emit = (name, ...args) => {
+    if (name === 'canvas:resync') resyncs.push(name);
+    originalEmit(name, ...args);
+  };
+
+  const c1: DrawCommand = {...command, opId:'op-1', strokeId:'s-1', points:[[1,1]], colorId:1};
+  const c2: DrawCommand = {...command, opId:'op-2', strokeId:'s-2', points:[[2,1]], colorId:2};
+  client.submit(c1);
+  client.submit(c2);
+  mocks.socket.sent[0].ack(null, {accepted:true, seq:1, opId:'op-1'});
+  mocks.socket.sent[1].ack(null, {accepted:true, seq:2, opId:'op-2'});
+
+  // Single batched update covering seq 1..3 reconciles both pending ops and applies seq 3.
+  mocks.socket.handlers.get('draw:applied')?.({
+    fromSeq: 1,
+    seq: 3,
+    moderationRevision: 0,
+    changes: [[721, 1], [722, 2], [723, 3]],
+  });
+  expect(client.displayGrid()[721]).toBe(1);
+  expect(client.displayGrid()[722]).toBe(2);
+  expect(client.displayGrid()[723]).toBe(3);
+  expect(client.canUndo()).toBe(true);
+  expect(resyncs).toHaveLength(0);
+
+  // Duplicate older batch is ignored.
+  mocks.socket.handlers.get('draw:applied')?.({
+    fromSeq: 1,
+    seq: 3,
+    moderationRevision: 0,
+    changes: [[721, 9]],
+  });
+  expect(client.displayGrid()[721]).toBe(1);
+  expect(resyncs).toHaveLength(0);
+
+  // Gap (fromSeq=5 while client is at seq=3) triggers resync.
+  mocks.socket.handlers.get('draw:applied')?.({
+    fromSeq: 5,
+    seq: 6,
+    moderationRevision: 0,
+    changes: [[724, 4]],
+  });
+  expect(resyncs).toHaveLength(1);
+  expect(client.displayGrid()[724]).toBe(0);
+});

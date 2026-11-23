@@ -4,7 +4,7 @@ import type { DrawCommand, DrawResult } from '../../../shared/protocol';
 
 type GridData = ArrayBuffer | ArrayBufferView | ArrayLike<number>;
 type State = { grid: GridData; seq: number; moderationRevision: number; status: string; palette:string[]; preserveLocalStroke?: boolean };
-type Update = { seq: number; moderationRevision: number; changes: [number,number][] };
+type Update = { fromSeq?: number; seq: number; moderationRevision: number; changes: [number,number][] };
 type Pending = { command: DrawCommand; seq?: number; sent: boolean; attempts: number; sendId: number; retryAt?: number; preview:boolean };
 
 const MAX_RETRIES = 6;
@@ -85,8 +85,12 @@ export class CollaborationClient {
   }
   private apply(update:Update) {
     if (!this.ready) return;
+    const fromSeq = update.fromSeq ?? update.seq;
+    if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(update.seq) || fromSeq > update.seq) {
+      this.ready=false; this.emit(); this.socket?.emit('canvas:resync'); return;
+    }
     if (update.seq <= this.seq && update.moderationRevision === this.revision) return;
-    if (update.seq !== this.seq+1 || update.moderationRevision !== this.revision) { this.ready=false; this.emit(); this.socket?.emit('canvas:resync'); return; }
+    if (fromSeq !== this.seq+1 || update.moderationRevision !== this.revision) { this.ready=false; this.emit(); this.socket?.emit('canvas:resync'); return; }
     for (const [index,color] of update.changes) { if (!Number.isInteger(index) || index<0 || index>=this.confirmed.length || !Number.isInteger(color) || color<0 || color>24) { this.ready=false; this.emit(); this.socket?.emit('canvas:resync'); return; } this.confirmed[index]=color; }
     this.seq=update.seq; this.pending=this.pending.filter(p=>p.seq === undefined || p.seq>this.seq); this.emit();
   }
