@@ -3,6 +3,9 @@ set -euo pipefail
 : "${BACKUP_HOST:?BACKUP_HOST required}" "${BACKUP_REMOTE_DIR:?BACKUP_REMOTE_DIR required}" "${BACKUP_STATE_DIR:?BACKUP_STATE_DIR required}" "${PROJECT_DIR:?PROJECT_DIR required}"
 [[ "$BACKUP_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]*$ ]] || { echo 'Invalid BACKUP_HOST' >&2; exit 1; }
 [[ "$BACKUP_REMOTE_DIR" =~ ^/[A-Za-z0-9_/-]+$ && "$BACKUP_REMOTE_DIR" != *..* ]] || { echo 'Invalid BACKUP_REMOTE_DIR' >&2; exit 1; }
+if [[ -n "${BACKUP_RETENTION_COUNT:-}" ]]; then
+  [[ "$BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid BACKUP_RETENTION_COUNT' >&2; exit 1; }
+fi
 mkdir -p "$BACKUP_STATE_DIR"
 chmod 700 "$BACKUP_STATE_DIR"
 exec 9>"$BACKUP_STATE_DIR/backup.lock"
@@ -25,3 +28,26 @@ ssh -o BatchMode=yes -- "$BACKUP_HOST" "cd '$BACKUP_REMOTE_DIR/$id' && sha256sum
 printf '%s %s\n' "$started" "$id" > "$BACKUP_STATE_DIR/verified.tmp"
 chmod 600 "$BACKUP_STATE_DIR/verified.tmp"
 mv -f "$BACKUP_STATE_DIR/verified.tmp" "$BACKUP_STATE_DIR/verified"
+
+if [[ -n "${BACKUP_RETENTION_COUNT:-}" ]]; then
+  ssh -o BatchMode=yes -- "$BACKUP_HOST" sh -s -- "$BACKUP_REMOTE_DIR" "$BACKUP_RETENTION_COUNT" <<'EOF'
+set -eu
+LC_ALL=C
+export LC_ALL
+remote_dir=$1
+retention=$2
+cd "$remote_dir"
+count=0
+ls -1r | while IFS= read -r entry; do
+  [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+  case "$entry" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+      count=$((count + 1))
+      if [ "$count" -gt "$retention" ]; then
+        rm -rf -- "./$entry"
+      fi
+      ;;
+  esac
+done
+EOF
+fi

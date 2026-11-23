@@ -37,3 +37,39 @@ it('sert le fond et exporte après déplacement d’un volume restauré',async()
    } finally { await app.close(); }
  } finally { store.close();rmSync(dir,{recursive:true,force:true}); }
 });
+
+it('rejette une restauration dont base.png ne correspond pas à base_image_checksum', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-restore-mismatch-'));
+  const database = join(dir, 'live.sqlite');
+  const store = new Store(database);
+  try {
+    const originalBase = await sharp({ create: { width: 720, height: 480, channels: 3, background: '#888888' } })
+      .png()
+      .toBuffer();
+    const tamperedBase = await sharp({ create: { width: 720, height: 480, channels: 3, background: '#224466' } })
+      .png()
+      .toBuffer();
+    writeFileSync(join(dir, 'base.png'), originalBase);
+    store.db
+      .prepare('UPDATE project SET base_image_path=?,base_image_checksum=?')
+      .run('base.png', createHash('sha256').update(originalBase).digest('hex'));
+
+    const backupDir = join(dir, 'backup');
+    await backupProject(database, backupDir);
+
+    writeFileSync(join(backupDir, 'base.png'), tamperedBase);
+    const tamperedHash = createHash('sha256').update(tamperedBase).digest('hex');
+    const updatedSums = readFileSync(join(backupDir, 'SHA256SUMS'), 'utf8').replace(
+      /^[a-f0-9]{64}  base\.png$/m,
+      `${tamperedHash}  base.png`,
+    );
+    writeFileSync(join(backupDir, 'SHA256SUMS'), updatedSums);
+
+    await expect(restoreProject(backupDir, join(dir, 'restored'))).rejects.toThrow(
+      'Somme du fond incompatible avec la base SQLite',
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

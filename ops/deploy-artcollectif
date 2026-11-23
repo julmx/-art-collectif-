@@ -25,11 +25,11 @@ if compose up --help | grep -q -- '--pull'; then
     set -- "$@" --pull never
 fi
 
-partage=/volume1/docker/art-collaboratif
-projet="$partage/art-collectif-codex-98477dc"
-archive="$partage/a-deployer/artcollectif.tar"
-sauvegardes="$partage/sauvegardes"
-proprietaire_sauvegardes=julienadmin
+partage="${PARTAGE:-/volume1/docker/art-collaboratif}"
+projet="${PROJET:-$partage/art-collectif-codex-98477dc}"
+archive="${ARCHIVE:-$partage/a-deployer/artcollectif.tar}"
+sauvegardes="${SAUVEGARDES:-$partage/sauvegardes}"
+proprietaire_sauvegardes="${PROPRIETAIRE_SAUVEGARDES:-julienadmin}"
 
 [ -f "$archive" ] && [ -r "$archive" ] && [ ! -L "$archive" ] ||
     fail "Archive introuvable ou illisible : $archive"

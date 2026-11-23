@@ -5,6 +5,11 @@ services:
       context: .
       target: app
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     environment:
       APP_ORIGIN: https://${DOMAIN:?DOMAIN required}:8443
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH required}
@@ -19,6 +24,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    mem_limit: 1500m
   web:
     networks:
       art_internal:
@@ -27,6 +33,11 @@ services:
       context: .
       target: web
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     environment:
       DOMAIN: ${DOMAIN:?DOMAIN required}
     ports:
