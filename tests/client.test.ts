@@ -16,6 +16,23 @@ it('réconcilie une diffusion avant ou après son acquittement',async()=>{
 it('réémet une commande non confirmée et retire son aperçu lors d’un reset',async()=>{
  const client=new CollaborationClient(()=>{});await client.connect();mocks.socket.handlers.get('canvas:state')?.(state());client.submit(command);expect(client.displayGrid()[721]).toBe(1);mocks.socket.disconnect();mocks.socket.connect();mocks.socket.handlers.get('canvas:state')?.(state());expect(mocks.socket.sent).toHaveLength(2);expect(mocks.socket.sent[1].command).toEqual(command);mocks.socket.handlers.get('canvas:reset')?.({...state(),moderationRevision:1});expect(client.displayGrid()[721]).toBe(0);
 });
+it('retire un aperçu acquitté absent de l’état restauré par le serveur',async()=>{
+ const client = new CollaborationClient(()=>{});
+ await client.connect();
+ const install = () => mocks.socket.handlers.get('canvas:state')?.(state());
+ install();
+ client.submit(command);
+ mocks.socket.sent[0].ack(null,{accepted:true,seq:1,opId:command.opId});
+ expect(client.displayGrid()[721]).toBe(1);
+
+ mocks.socket.disconnect();
+ mocks.socket.connect();
+ install();
+
+ expect(client.displayGrid()[721]).toBe(0);
+ expect(client.canUndo()).toBe(true);
+ expect(mocks.socket.sent).toHaveLength(1);
+});
 it('réessaie après une déconnexion imposée par le serveur',async()=>{
  vi.useFakeTimers();try{const client=new CollaborationClient(()=>{});await client.connect();const connect=vi.spyOn(mocks.socket,'connect');mocks.socket.handlers.get('disconnect')?.('io server disconnect');await vi.advanceTimersByTimeAsync(3000);expect(connect).toHaveBeenCalledTimes(1);}finally{vi.useRealTimers();}
 });

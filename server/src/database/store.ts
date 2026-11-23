@@ -31,11 +31,11 @@ export class Store {
   lastChanges: Cell[] | null = null;
   constructor(path: string, deferRebuild=false) {
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;');
     const schemaVersion=Number((this.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version);
     if(schemaVersion>1) throw new Error('Database schema is newer than this application');
     if ((this.db.prepare('PRAGMA foreign_keys').get() as {foreign_keys:number}).foreign_keys !== 1) throw new Error('SQLite foreign keys unavailable');
-    if ((this.db.prepare('PRAGMA journal_mode').get() as {journal_mode:string}).journal_mode !== 'wal' || (this.db.prepare('PRAGMA synchronous').get() as {synchronous:number}).synchronous !== 2) throw new Error('SQLite durability settings unavailable');
+    if ((this.db.prepare('PRAGMA journal_mode').get() as {journal_mode:string}).journal_mode !== 'wal' || (this.db.prepare('PRAGMA synchronous').get() as {synchronous:number}).synchronous !== 1) throw new Error('SQLite write settings unavailable');
     this.db.exec('BEGIN IMMEDIATE');
     try {
     this.db.exec(`CREATE TABLE IF NOT EXISTS project (id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL CHECK(status IN ('draft','open','paused','closed')), palette_json TEXT NOT NULL, moderation_revision INTEGER NOT NULL DEFAULT 0);

@@ -25,7 +25,7 @@ L'application est un dispositif de création, pas un réseau social.
 2. Les utilisateurs peuvent recouvrir sans restriction les dessins précédents.
 3. Les participants utilisent exclusivement les couleurs autorisées, jamais du noir, du blanc ou du gris.
 4. Aucun quota global de pixels ou d'interventions n'est appliqué.
-5. Toutes les opérations acceptées sont enregistrées durablement et peuvent être rejouées.
+5. Le serveur valide chaque opération acceptée dans SQLite avant de l'acquitter. Le journal récupéré permet le rejeu selon les garanties du §11.3.
 6. L'historique n'est jamais exposé par l'interface ou les API publiques.
 7. Aucun compte n'est nécessaire pour participer.
 8. Le projet peut être arrêté puis exporté intégralement par l'administrateur.
@@ -38,7 +38,8 @@ L'application est un dispositif de création, pas un réseau social.
 | Export public | Aucun, y compris anonymisé |
 | Relecture et timelapse | Deux politiques : brut et modéré selon les décisions retenues au début de la relecture |
 | Reconstitution de la modération telle qu'affichée à l'époque | Hors périmètre |
-| Redémarrage avec stockage intact | Aucune perte d'opération acquittée |
+| Redémarrage ou crash du processus serveur seul | Toutes les opérations acquittées sont conservées |
+| Coupure électrique ou crash du système | Reprise d'un état cohérent avec perte possible de transactions récentes déjà acquittées |
 | Perte complète du disque ou du VPS | Objectif de perte maximale d'une heure de contributions |
 | Capacité cible | 50 personnes dessinant simultanément |
 | Commandes locales non confirmées | Conservées pendant la vie de l'onglet ; persistance après fermeture ou rechargement hors périmètre |
@@ -108,12 +109,12 @@ Le client conserve séparément :
 1. La grille confirmée par le serveur.
 2. Les commandes locales en attente de confirmation.
 
-Un refus retire la prévisualisation correspondante. L'acquittement établit l'acceptation durable ; le flux ordonné ou l'état complet établit le contenu de la grille confirmée. Une commande n'est pas appliquée deux fois lorsque l'acquittement et la diffusion arrivent dans un ordre différent.
+Un refus retire la prévisualisation correspondante. L'acquittement confirme que SQLite a validé la transaction. Le flux ordonné ou l'état complet établit le contenu de la grille confirmée. Une commande n'est pas appliquée deux fois lorsque l'acquittement et la diffusion arrivent dans un ordre différent.
 
 En cas de perte de connexion :
 
 - L'interface signale le problème et suspend les nouveaux dessins.
-- Les parties déjà acceptées sont conservées.
+- Une coupure réseau seule préserve les parties déjà acceptées par le serveur.
 - Les commandes envoyées mais non confirmées restent en mémoire dans l'onglet.
 - Après réception de l'état courant, elles sont réémises dans leur ordre d'origine, avec leurs identifiants et contenus initiaux.
 - La fermeture ou le rechargement de l'onglet peut perdre les commandes non confirmées, jamais celles déjà acceptées par le serveur.
@@ -171,7 +172,7 @@ Les commandes nouvelles sont acceptées uniquement à l'état open. Les retransm
 
 Utiliser des versions stables et maintenues au démarrage du développement, verrouiller les dépendances avec un fichier lock et documenter les versions de Node.js, SQLite et FFmpeg.
 
-La connexion SQLite d'écriture utilise explicitement journal_mode=WAL et synchronous=FULL. Ces valeurs sont vérifiées au démarrage. Les contraintes de références et de domaine sont activées et testées.
+La connexion SQLite d'écriture utilise explicitement `journal_mode=WAL` et `synchronous=NORMAL`. Ces valeurs sont vérifiées au démarrage. Les contraintes de références et de domaine sont activées et testées.
 
 ### 3.2 Organisation du code
 
@@ -453,7 +454,7 @@ Aucune commande n'est annoncée comme acceptée avant la réussite du commit. Un
 
 En cas d'échec de mise à jour de l'état mémoire après commit, le service cesse de servir des états incohérents, suspend le traitement et reconstruit la grille depuis le journal.
 
-En cas de redémarrage entre commit et diffusion, le journal reconstruit l'état ; les clients reconnectés reçoivent cet état et peuvent réobtenir leurs acquittements.
+En cas d'arrêt du processus serveur entre commit et diffusion, le journal reconstruit l'état. Les clients reconnectés reçoivent cet état et peuvent réobtenir leurs acquittements. Après un crash système ou une coupure électrique, l'état transmis correspond au journal effectivement récupéré.
 
 ### 6.4 Concurrence
 
@@ -777,10 +778,11 @@ L'application ne donne pas accès à l'historique ni aux exports publics. Elle n
 
 ### 11.3 Durabilité et sauvegardes
 
-**Redémarrage avec stockage intact :**
+**Reprise sur le même stockage**
 
-- Aucune opération acquittée ne doit être perdue.
-- WAL et synchronous=FULL sont vérifiés.
+- Un redémarrage ou un crash du processus serveur seul conserve toutes les opérations acquittées.
+- Une coupure électrique ou un crash du système peut faire perdre des transactions récentes déjà acquittées. SQLite récupère un état cohérent. La synchronisation du journal dépend notamment des checkpoints, dont le déclenchement automatique suit le volume d'écritures.
+- `WAL` et `synchronous=NORMAL` sont vérifiés au démarrage.
 - Aucun acquittement positif avant commit.
 - La grille est reconstruite depuis le dernier snapshot compatible et les événements suivants, ou depuis zéro.
 - Les sauvegardes utilisent l'API SQLite appropriée ; aucune copie naïve du seul fichier de base active en WAL.
@@ -850,16 +852,16 @@ Test principal :
 
 Critères :
 
-- Aucune perte d'opération acquittée.
+- Toutes les opérations acquittées sont retrouvées en base à la fin de l'essai.
 - Aucun doublon.
 - Même grille sur le serveur, les clients resynchronisés et le rejeu du journal.
 - Acquittement inférieur à 500 ms pour 95 % des commandes dans l'environnement de test documenté.
-- Mesure depuis l'envoi jusqu'à la réception de l'acquittement, incluant le commit durable.
+- Mesure depuis l'envoi jusqu'à la réception de l'acquittement, incluant le commit SQLite.
 - Absence d'accumulation continue de la file d'attente.
 - Mémoire bornée et consommation disque mesurée.
 - Refus ou régulation explicite en surcharge, sans confirmation mensongère.
 
-Les 500 ms constituent un critère de recette, pas un résultat acquis. Documenter le matériel, la latence réseau, le protocole du test et les résultats. Ajuster le VPS ou l'implémentation si nécessaire, sans affaiblir la durabilité.
+Documenter le matériel, la latence réseau, le protocole du test et les résultats. Ajuster le VPS ou l'implémentation si nécessaire, en respectant les garanties du §11.3.
 
 ## 13. Tests d'acceptation
 
@@ -931,8 +933,8 @@ Automatiser les tests lorsque pertinent. Les essais physiques de tactile/stylet 
 
 ### 13.5 Exploitation et exports
 
-- [ ] Un redémarrage conserve toutes les commandes validées.
-- [ ] Une panne après commit et avant diffusion n'entraîne aucune perte.
+- [ ] Un redémarrage du service conserve toutes les commandes validées.
+- [ ] Un arrêt du processus serveur après commit et avant diffusion préserve les commandes validées.
 - [ ] Une erreur disque ou un disque plein ne produit aucun faux acquittement.
 - [ ] Une restauration extérieure reproduit le point sauvegardé.
 - [ ] Les alertes de sauvegarde utilisent l'âge du point réellement récupérable.
@@ -969,7 +971,7 @@ Livrables :
 
 - Fastify, SQLite et migrations.
 - Socket.IO et sessions anonymes.
-- Validation et enregistrement durable des commandes.
+- Validation et enregistrement transactionnel des commandes avant acquittement.
 - Découpage et clôture des traits.
 - Prévisualisation, acquittements et réconciliation.
 - Synchronisation et resynchronisation.
@@ -1053,7 +1055,7 @@ Ne pas ajouter les fonctions exclues par anticipation.
 
 **Définition de terminé :**
 
-La V1 est terminée lorsqu'une personne peut ouvrir une URL, dessiner sur le canevas partagé sans inscription et voir les interventions synchronisées ; lorsque toutes les commandes acquittées sont conservées et rejouables ; et lorsque l'administrateur peut consulter l'historique privé, reconstruire un état à une date ou une séquence, masquer ou restaurer une intervention et produire images, archives et timelapses bruts ou modérés.
+La V1 est terminée lorsqu'une personne peut ouvrir une URL, dessiner sur le canevas partagé sans inscription et voir les interventions synchronisées. Le journal permet le rejeu conformément aux garanties du §11.3. L'administrateur peut consulter l'historique privé, reconstruire un état à une date ou une séquence, masquer ou restaurer une intervention et produire images, archives et timelapses bruts ou modérés.
 
 La validation inclut un essai avec 50 participants dessinant simultanément et une restauration extérieure respectant l'objectif de perte maximale d'une heure.
 

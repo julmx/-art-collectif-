@@ -48,6 +48,10 @@ L’essai Synology suivant, sur `e66795f`, a rencontré son premier refus lorsqu
 
 ### Temps de traitement des lots
 
-`drawDiagnostics.batchTimings` indique le nombre de lots et de commandes traités. Chaque phase donne le temps cumulé, le p95 et le maximum par lot, en millisecondes. Le rapport distingue la sélection du lot, l’ouverture de la transaction SQLite, les insertions, le commit durable, la rastérisation avec mise à jour de la grille et la diffusion synchrone. Cette dernière mesure couvre la préparation et l’émission Socket.IO côté serveur. La réception par les clients est mesurée par le scénario de charge.
+`drawDiagnostics.batchTimings` indique le nombre de lots et de commandes traités. Chaque phase donne le temps cumulé, le p95 et le maximum par lot, en millisecondes. Le rapport distingue la sélection du lot, l’ouverture de la transaction SQLite, les insertions, le commit, la rastérisation avec mise à jour de la grille et la diffusion synchrone. Cette dernière mesure couvre la préparation et l’émission Socket.IO côté serveur. La réception par les clients est mesurée par le scénario de charge.
 
 `storeOtherMs` inclut notamment les lectures SQLite, la validation et la sérialisation. `otherMs` inclut notamment l’envoi des acquittements et la planification des snapshots. `totalMs` mesure le traitement synchrone du lot. Les temps d’attente en file et entre lots ne sont pas inclus. Comparer les cumuls pour identifier les phases qui mobilisent le plus de temps et le p95 par lot pour repérer des pointes.
+
+### Essai local en mode NORMAL
+
+Le 23 novembre 2026, un essai de 60 secondes sous WSL avec `synchronous=NORMAL` a acquitté les 30 044 commandes envoyées. Le p95 d’acquittement était de 55,23 ms et le p95 du commit par lot de 30,62 ms. La sauvegarde locale, la convergence et le rejeu ont réussi. Les essais Synology précédents utilisaient `synchronous=FULL`.

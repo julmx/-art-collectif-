@@ -58,7 +58,8 @@ export class CollaborationClient {
   private install(state:State, reset=false) {
     if (state.grid.length !== WIDTH * HEIGHT || !Number.isSafeInteger(state.seq)) { this.socket?.disconnect(); return; }
     this.confirmed = Uint8Array.from(state.grid); this.seq=state.seq; this.revision=state.moderationRevision; this.status=state.status; this.palette=state.palette; this.ready=true;
-    this.pending=this.pending.filter(p=>p.seq === undefined || p.seq > this.seq);
+    // A full state replaces all acknowledged previews, including commits lost before recovery.
+    this.pending=this.pending.filter(p=>p.seq === undefined);
     for (const p of this.pending) p.sent=false;
     this.emit(reset); this.flush();
   }
