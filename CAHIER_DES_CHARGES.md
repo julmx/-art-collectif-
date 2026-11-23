@@ -1,13 +1,13 @@
 # Art Collectif — Cahier des charges V1
 
-**Version :** 1.1  
-**Date :** 1er novembre 2026  
+**Version :** 1.2  
+**Date :** 23 novembre 2026  
 **Statut :** spécification de développement consolidée  
 **Nature :** application web de création plastique collaborative  
 **Durée de l'expérience :** 1 à 2 mois  
 **Principe de développement :** privilégier la simplicité, la fiabilité et la réutilisation de composants éprouvés.
 
-Ce document remplace la version 1.0. Il intègre la revue de cohérence et les arbitrages du porteur du projet. Les critères de performance constituent des exigences à vérifier, et non des résultats de tests déjà exécutés.
+Ce document remplace la version 1.1. Il aligne la spécification sur les évolutions retenues par le porteur du projet en cours de développement V1 : pinceau unique incluant la taille 1 px, annulation individuelle encadrée, bannissement de session, modération visuelle par lot et exports privés asynchrones depuis l'administration. Les critères de performance constituent des exigences à vérifier, et non des résultats de tests déjà exécutés.
 
 ## 1. Objectif
 
@@ -45,12 +45,14 @@ L'application est un dispositif de création, pas un réseau social.
 | Commandes locales non confirmées | Conservées pendant la vie de l'onglet ; persistance après fermeture ou rechargement hors périmètre |
 | Fond, dimensions et palette | Figés dès la première ouverture |
 | Clôture | Définitive pour la V1 |
+| Annulation individuelle | Masquage du dernier trait visible du participant, espacé de 3 s par participant avec pause globale de 1 s après chaque reconstruction |
+| Bannissement de session | Réversible, journalisé et basé sur le cookie anonyme, sans garantie de blocage durable d'une personne physique |
 
 La capacité cible constitue une marge de fonctionnement ; elle ne suppose pas que cette fréquentation sera atteinte.
 
 ### 1.3 Vocabulaire
 
-- **Intervention ou trait :** un clic, un glissement continu de l'outil Pixel ou un trait complet de pinceau.
+- **Intervention ou trait :** un clic, un tracé continu au pixel (pinceau 1 px ou outil `pixel` côté protocole) ou un trait complet de pinceau.
 - **Commande ou partie :** un message technique appartenant à une intervention. Une intervention longue contient plusieurs commandes.
 - **Séquence (seq) :** ordre définitif des commandes acceptées, attribué par le serveur.
 - **Révision de modération :** version des décisions de masquage et de restauration.
@@ -65,7 +67,9 @@ Une unique page responsive comprenant :
 
 - Un titre et une courte présentation du projet.
 - Un canevas partagé de 720 × 480 pixels.
-- Deux outils : **Pixel** et **Pinceau**.
+- Un outil de dessin **Pinceau** (épaisseurs 1, 3, 5, 9, 15 et 21 px, l'épaisseur 1 px couvrant le tracé pixel par pixel).
+- Un outil explicite **Déplacer** pour la navigation dans le canevas.
+- Un bouton **Annuler** qui masque le dernier trait visible du participant, avec espacement anti-abus (3 s par participant et pause globale de 1 s après chaque reconstruction).
 - Une palette de 24 couleurs prédéfinies.
 - Un sélecteur d'épaisseur du pinceau.
 - Un zoom et un déplacement dans le canevas.
@@ -74,18 +78,21 @@ Une unique page responsive comprenant :
 
 L'interface fonctionne avec souris, écran tactile et stylet via les Pointer Events.
 
-Les opérations de zoom et de déplacement ne modifient jamais l'image. Sur écran tactile, un pointeur dessine ; un geste à deux doigts sert au déplacement et au zoom et interrompt le dessin actif. Prévoir une commande explicite de déplacement pour la souris. Le comportement de capture, de sortie du canevas et de cancellation du pointeur est testé.
+Les opérations de zoom et de déplacement ne modifient jamais l'image. Sur écran tactile, un pointeur dessine ; un geste à deux doigts sert au déplacement et au zoom et interrompt le dessin actif. L'outil explicite **Déplacer** permet le déplacement à la souris. Le comportement de capture, de sortie du canevas et de cancellation du pointeur est testé.
 
 Aucune fonctionnalité publique de consultation des états antérieurs, de lecture du timelapse, de téléchargement d'image ou d'export d'historique n'est fournie.
 
-### 2.2 Outil Pixel
+### 2.2 Tracé au pixel (Pinceau 1 px et compatibilité protocole)
+
+Dans l'interface publique, le tracé pixel par pixel s'effectue via l'outil **Pinceau** d'épaisseur **1 pixel** :
 
 - Un clic colore exactement une cellule de la grille.
 - Un déplacement avec le bouton maintenu colore les cellules du tracé interpolé, sans trou.
 - La couleur provient exclusivement de la palette autorisée.
 - Une nouvelle intervention peut remplacer n'importe quelle couleur précédente.
 - Un pixel du fond noir et blanc peut être recouvert.
-- L'épaisseur de cet outil est toujours de 1 pixel.
+
+Le protocole et le serveur continuent d'accepter `tool: "pixel"` avec `size: 1` pour compatibilité et tests, avec la même rastérisation et le même système de coordonnées que le pinceau d'épaisseur 1 pixel.
 
 ### 2.3 Outil Pinceau
 
@@ -95,7 +102,7 @@ Aucune fonctionnalité publique de consultation des états antérieurs, de lectu
 - Extrémités arrondies selon un masque circulaire discret.
 - Aucun anticrénelage, transparence ou mélange des couleurs.
 - Les tracés peuvent se superposer et se recouvrir.
-- Même système de coordonnées que l'outil Pixel.
+- Même système de coordonnées pour toutes les épaisseurs et pour `tool: "pixel"` côté protocole.
 - La pression et l'inclinaison du stylet ne modifient pas l'épaisseur en V1.
 
 ### 2.4 Comportement collaboratif
@@ -126,13 +133,14 @@ Les participants n'ont pas accès aux identifiants des autres utilisateurs.
 Interface privée protégée par authentification, permettant de :
 
 - Importer et vérifier le fond PNG.
-- Définir et vérifier la palette avant l'ouverture.
-- Ouvrir, suspendre, reprendre et clôturer l'expérience.
+- Définir et vérifier la palette avant l'ouverture, et éditer les textes publics et conditions de participation.
+- Ouvrir, suspendre, reprendre et clôturer l'expérience (clôture soumise à confirmation explicite).
 - Consulter l'historique ordonné des contributions.
 - Afficher une image à une date ou un numéro de séquence, en mode brut ou modéré.
-- Masquer ou restaurer une intervention complète.
+- Modérer visuellement depuis la toile : clic sur le canevas pour lister les traits au point choisi ou à une cellule de distance (visibles en premier), surlignage d'un trait, consultation des listes des traits masqués ou des traits d'un participant, sélection jusqu'à 50 traits, aperçu de l'image résultante avant confirmation explicite, puis masquage ou restauration complète (unitaire ou par lot).
+- Bannir ou débannir une session de participant (`participant_sanctions`) : mesure réversible et journalisée qui empêche les nouvelles contributions (et annulations) de la session, y compris sur ses connexions déjà actives, sans masquer automatiquement ses traits existants.
 - Exporter les images, les contributions et les décisions de modération.
-- Télécharger les archives déjà produites par les outils CLI.
+- Lancer de façon asynchrone la génération d'archives ZIP (avec ou sans vidéos) et de vidéos MP4 depuis l'interface, à raison d'une seule génération longue à la fois dans un processus détaché à priorité réduite, suivre l'avancement et télécharger les fichiers générés ainsi que les archives déjà produites par les outils CLI.
 
 Le fond, les dimensions et la palette sont modifiables uniquement à l'état draft. Ils sont figés dès la première ouverture, même si aucune contribution n'a encore été acceptée.
 
@@ -273,7 +281,7 @@ Tous les points successifs d'un trajet sont reliés, y compris entre parties d'u
 
 Les centres sont des coordonnées entières valides. Les empreintes dépassant les bords sont découpées. Le serveur refuse les centres hors limites.
 
-Le client inverse les transformations de zoom et déplacement, puis utilise une règle documentée de conversion en cellule, identique pour les deux outils. Le ratio de pixels de l'écran n'affecte pas les coordonnées natives.
+Le client inverse les transformations de zoom et déplacement, puis utilise une règle documentée de conversion en cellule, identique pour toutes les épaisseurs et pour les outils du protocole. Le ratio de pixels de l'écran n'affecte pas les coordonnées natives.
 
 À la sortie du pointeur hors du canevas, le tracé est interrompu. La rentrée ne relie pas artificiellement le nouveau point au dernier point intérieur : elle commence une nouvelle intervention si le dessin reprend.
 
@@ -336,7 +344,7 @@ Journal principal append-only.
 | final | INTEGER | Booléen de fin d'intervention |
 | tool | TEXT | pixel / brush |
 | color_id | INTEGER | Index 1 à 24 |
-| size | INTEGER | 1 pour Pixel ; taille autorisée pour Pinceau |
+| size | INTEGER | 1, 3, 5, 9, 15 ou 21 (1 obligatoire pour pixel) |
 | points_json | TEXT | Liste ordonnée de coordonnées |
 | created_at | TEXT | Date d'acceptation UTC |
 
@@ -385,6 +393,39 @@ Les snapshots automatiques concernent la vue modérée. Un export brut n'utilise
 
 Les snapshots sont des caches reconstructibles. Le fond, la palette, le journal et les décisions de modération font autorité.
 
+### 5.6 Table terms_history
+
+Journal append-only des versions successives des conditions de participation (protégé contre `UPDATE` et `DELETE` par déclencheurs SQLite).
+
+| Champ | Type | Fonction |
+|---|---|---|
+| id | INTEGER PK | Ordre d'enregistrement des versions |
+| terms | TEXT | Texte complet des conditions de participation |
+| effective_after_seq | INTEGER | Dernière séquence acceptée au moment du changement |
+| created_at | TEXT | Date d'enregistrement UTC |
+
+Une ligne est ajoutée dans la même transaction que la mise à jour de `project.participation_terms` lorsque le texte change. Cet historique trace les conditions applicables à chaque contribution sans modification rétroactive et est exporté dans `project.json`.
+
+### 5.7 Table participant_sanctions
+
+Journal append-only des décisions de bannissement et de débannissement de session (protégé contre `UPDATE` et `DELETE` par déclencheurs SQLite).
+
+| Champ | Type | Fonction |
+|---|---|---|
+| id | INTEGER PK | Ordre des décisions |
+| participant_id | TEXT | Référence à `participants(id)` |
+| action | TEXT | `ban` / `unban` |
+| reason | TEXT | Motif interne |
+| created_at | TEXT | Date UTC |
+
+Contraintes et index :
+
+- Référence valide au participant (`REFERENCES participants(id)`).
+- Vérification du domaine : `action IN ('ban', 'unban')`.
+- Index sur `(participant_id, id)`.
+
+La dernière décision enregistrée pour un `participant_id` détermine si sa session est bannie. Un bannissement empêche les nouvelles commandes de dessin et les annulations de cette session sans masquer automatiquement ses traits existants.
+
 ## 6. Traitement d'une intervention
 
 ### 6.1 Format des commandes
@@ -406,7 +447,7 @@ Message Socket.IO draw:submit :
 
 Les coordonnées sont entières dans le système natif du canevas.
 
-L'outil Pixel utilise tool: "pixel", size: 1 et une liste de points. Un clic simple contient un point et final: true.
+Dans l'interface publique, le tracé au pixel utilise `tool: "brush"`, `size: 1` et une liste de points. Pour compatibilité et tests, le serveur continue d'accepter `tool: "pixel"` avec `size: 1`. Un clic simple contient un point et `final: true`.
 
 ### 6.2 Regroupement, continuité et clôture
 
@@ -473,10 +514,13 @@ Utiliser Socket.IO sans dépendre exclusivement de sa récupération automatique
 | Sens | Message | Contenu |
 |---|---|---|
 | Client → serveur | draw:submit | Commande de dessin ou clôture technique |
+| Client → serveur | draw:undo | Demande d'annulation du dernier trait visible du participant (acquittement `{ok, code?}`) |
 | Client → serveur | canvas:resync | Demande d'état complet |
 | Serveur → client | canvas:state | Grille, dimensions, palette, seq, moderationRevision, statut |
 | Serveur → client | draw:applied | seq, moderationRevision et changements visibles |
 | Serveur → client | project:status | Statut et disponibilité courante du dessin |
+| Serveur → client | project:updated | Signal de mise à jour des métadonnées publiques du projet |
+| Serveur → client | participant:restriction | État de bannissement de la session courante (`{banned}`) |
 | Serveur → client | canvas:reset | Signal de remplacement avec l'état complet correspondant |
 | Serveur → client | draw:rejected | Identifiant de la commande du destinataire et code de refus |
 
@@ -492,7 +536,7 @@ L'acquittement Socket.IO de chaque soumission constitue la réponse principale ;
 }
 ~~~
 
-Un refus renvoie accepted: false et un code explicite, sans appliquer la commande. Prévoir notamment : INVALID_MESSAGE, INVALID_COLOR, INVALID_COORDINATES, INVALID_SIZE, PROJECT_NOT_OPEN, OP_ID_CONFLICT, PART_OUT_OF_ORDER, STROKE_CLOSED, CONTINUITY_ERROR, RATE_LIMITED et STORAGE_UNAVAILABLE.
+Un refus renvoie accepted: false et un code explicite, sans appliquer la commande. Prévoir notamment : INVALID_MESSAGE, INVALID_COLOR, INVALID_COORDINATES, INVALID_SIZE, COST_LIMIT_EXCEEDED, PARTICIPANT_BANNED, PROJECT_NOT_OPEN, OP_ID_CONFLICT, PART_OUT_OF_ORDER, STROKE_CLOSED, CONTINUITY_ERROR, RATE_LIMITED et STORAGE_UNAVAILABLE.
 
 Les délais de retransmission sont bornés et espacés. Une erreur définitive n'est pas réessayée indéfiniment. Le délai d'attente d'un acquittement ne signifie pas que la commande a été refusée.
 
@@ -549,15 +593,26 @@ Toutes les routes ci-dessous exigent une session administrateur valide, à l'exc
 | POST /api/admin/login | Authentification, protection contre tentatives répétées |
 | POST /api/admin/logout | Invalidation de la session |
 | POST /api/admin/base-image | Import et validation du PNG ; draft uniquement |
+| GET /api/admin/config | Lecture de la configuration courante (statut, palette, textes, dates, présence du fond) |
 | PUT /api/admin/config | Configuration ; paramètres graphiques modifiables en draft uniquement |
 | POST /api/admin/status | Transition autorisée du cycle de vie |
 | GET /api/admin/events?after=SEQ&limit=100 | Journal paginé dans l'ordre ; limite maximale côté serveur |
 | GET /api/admin/image.png?seq=1842&moderation=moderated | Reconstruction privée |
-| POST /api/admin/moderation | hide ou restore pour (participant_id, stroke_id), avec motif |
+| POST /api/admin/moderation | hide ou restore unitaire pour (participant_id, stroke_id), avec motif |
+| GET /api/admin/moderation/hit?x=X&y=Y | Recherche des traits au point choisi ou à une cellule de distance (visibles en premier) |
+| GET /api/admin/moderation/strokes | Liste paginée des traits masqués (`hidden=1`) ou des traits d'un participant (`participantId`) |
+| GET /api/admin/moderation/stroke | Commandes d'un trait pour surlignage visuel (limité aux 200 premières parties) |
+| POST /api/admin/moderation/preview | Aperçu PNG d'une décision `hide` ou `restore` sur 1 à 50 traits sans modifier l'état courant |
+| POST /api/admin/moderation/batch | Application par lot (`hide` ou `restore`, 1 à 50 traits) avec confirmation et contrôle de `expectedSeq` / `expectedRevision` |
+| POST /api/admin/participant-sanction | Bannissement (`ban`, avec confirmation) ou débannissement (`unban`) d'une session |
 | GET /api/admin/export/events.jsonl | Journal complet privé |
 | GET /api/admin/export/moderation.jsonl | Décisions de modération privées |
 | GET /api/admin/export/final.png | Image composée au point de capture |
 | GET /api/admin/export/overlay.png | Calque couleur transparent |
+| POST /api/admin/export-jobs | Lancement asynchrone (HTTP 202) d'une archive ZIP ou d'une vidéo MP4 (une génération à la fois) |
+| GET /api/admin/export-jobs | État des générations lancées depuis l'interface (`running`, `done`, `failed`) |
+| GET /api/admin/generated | Liste des archives et vidéos générées depuis l'interface, avec métadonnées privées |
+| GET /api/admin/generated/:file | Téléchargement privé d'un fichier généré par l'interface |
 | GET /api/admin/archives | Liste des archives déjà produites |
 | GET /api/admin/archives/:archiveId | Téléchargement d'une archive existante |
 
@@ -571,9 +626,9 @@ Pour les images :
 - Une reconstruction modérée fige la révision utilisée et la restitue dans les métadonnées de la réponse.
 - Les paramètres invalides sont refusés explicitement.
 
-Les téléchargements administratifs ne sont pas mis en cache publiquement. Un archiveId est résolu côté serveur et n'autorise aucun chemin arbitraire.
+Les téléchargements administratifs ne sont pas mis en cache publiquement. Un `archiveId` ou un nom de fichier généré est résolu côté serveur et n'autorise aucun chemin arbitraire.
 
-Les exports vidéo et ZIP sont exécutés par scripts CLI privés. L'interface ne lance pas leur calcul dans une requête web longue.
+Les exports vidéo et ZIP peuvent être exécutés par scripts CLI privés ou lancés de manière asynchrone depuis l'interface d'administration (`POST /api/admin/export-jobs`). Dans ce second cas, le calcul ne s'exécute pas dans la requête HTTP : il est délégué à un processus séparé détaché à priorité réduite (une seule génération longue à la fois), hors du chemin de traitement des contributions. Un redémarrage interrompt une génération en cours ; les fichiers terminés restent téléchargeables.
 
 ## 9. Historique, snapshots et modération
 
@@ -611,19 +666,19 @@ La rétention des snapshots est bornée et documentée ; supprimer un cache ne s
 
 ### 9.3 Modération
 
-L'administrateur masque ou restaure un trait entier identifié par (participant_id, stroke_id).
+L'administrateur masque ou restaure un trait entier identifié par `(participant_id, stroke_id)`, de façon unitaire ou par lot (jusqu'à 50 traits depuis la modération visuelle). L'annulation individuelle par un participant utilise le même mécanisme de masquage sur son dernier trait visible.
 
 Procédure :
 
-1. Bloquer temporairement les nouvelles écritures dans l'ordre sérialisé et signaler la suspension technique.
-2. Enregistrer la décision et incrémenter la révision dans une même transaction.
-3. Invalider logiquement les anciens caches modérés.
-4. Reconstruire l'image avec les traits visibles à la nouvelle révision.
-5. Rejouer toutes les contributions conservées dans leur ordre initial.
-6. Remplacer atomiquement l'état public et transmettre canvas:reset avec son état complet.
-7. Rétablir la disponibilité autorisée par le statut réel du projet.
+1. Valider les traits visés, l'action (`hide` ou `restore`), l'unicité d'une reconstruction à la fois et l'état attendu (`expectedSeq`, `expectedRevision`).
+2. Reconstruire la grille modérée dans un processus séparé à priorité réduite, sans interrompre l'acceptation des contributions sur le serveur principal.
+3. Vérifier avant validation que la révision de modération n'a pas changé entre-temps :
+   - Pour une décision par lot issue de l'aperçu (`POST /api/admin/moderation/batch`), l'état attendu (`expectedSeq`, `expectedRevision`) doit rester inchangé ; si une contribution ou une autre décision intervient depuis l'aperçu ou pendant le calcul, la décision est refusée sans modification (`MODERATION_STATE_CHANGED`) et doit être relancée depuis un aperçu actualisé (en cas de forte activité, l'administrateur peut suspendre temporairement le projet).
+   - Pour une modération unitaire ou une annulation participant, les éventuelles contributions acceptées pendant le calcul sont rejouées dans leur ordre initial sur la grille reconstruite avant validation.
+4. Enregistrer la ou les décisions dans `moderation_actions` et incrémenter `project.moderation_revision` dans une même transaction SQLite, ce qui invalide logiquement les anciens caches modérés.
+5. Remplacer atomiquement l'état public en mémoire et transmettre `canvas:reset` avec son état complet.
 
-Une suspension technique ne rouvre jamais un projet paused ou closed. En cas d'échec de reconstruction, les écritures restent suspendues jusqu'au rétablissement de la cohérence.
+Une opération de modération ne rouvre jamais un projet `paused` ou `closed`. En cas d'échec compromettant la cohérence de l'état mémoire, les écritures restent suspendues jusqu'au rétablissement de la cohérence.
 
 Les futures parties d'un trait déjà masqué restent masquées même si elles sont acceptées après la décision. Elles sont enregistrées et font progresser la séquence sans diffuser leur géométrie.
 
@@ -713,10 +768,10 @@ archive/
 ├── moderation.jsonl
 ├── snapshots/
 ├── replay/
-├── timelapse-chronologique-brut.mp4
-├── timelapse-chronologique-modere.mp4
-├── timelapse-activite-brut.mp4
-├── timelapse-activite-modere.mp4
+├── timelapse-chronological-raw.mp4
+├── timelapse-chronological-moderated.mp4
+├── timelapse-activity-raw.mp4
+├── timelapse-activity-moderated.mp4
 └── README.txt
 ~~~
 
@@ -870,7 +925,7 @@ Automatiser les tests lorsque pertinent. Les essais physiques de tactile/stylet 
 ### 13.1 Dessin
 
 - [ ] Un clic modifie exactement la cellule attendue.
-- [ ] Un glissement Pixel reste continu, y compris entre messages.
+- [ ] Un glissement au pixel (pinceau 1 px et outil `pixel` côté protocole) reste continu, y compris entre messages.
 - [ ] Un trait de pinceau est continu pour toutes les tailles.
 - [ ] Souris, tactile et stylet permettent de dessiner.
 - [ ] Zoom, déplacement et gestes à deux doigts ne dessinent pas.
@@ -1023,7 +1078,7 @@ Ne pas développer :
 - Votes, scores ou classements.
 - Plusieurs canevas.
 - Partage de calques entre participants.
-- Gomme ou annulation individuelle.
+- Gomme (effacement local arbitraire de pixels).
 - Historique public.
 - Export public, même anonymisé.
 - Timelapse public dans l'application.
