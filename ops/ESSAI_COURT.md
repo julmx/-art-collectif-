@@ -55,3 +55,12 @@ L’essai Synology suivant, sur `e66795f`, a rencontré son premier refus lorsqu
 ### Essai local en mode NORMAL
 
 Le 23 novembre 2026, un essai de 60 secondes sous WSL avec `synchronous=NORMAL` a acquitté les 30 044 commandes envoyées. Le p95 d’acquittement était de 55,23 ms et le p95 du commit par lot de 30,62 ms. La sauvegarde locale, la convergence et le rejeu ont réussi. Les essais Synology précédents utilisaient `synchronous=FULL`.
+
+### Essais sur le NAS en mode NORMAL et après optimisations
+
+Deux essais isolés de 60 secondes ont été exécutés sur le NAS Synology le 23 novembre 2026 dans un conteneur jetable (`--network none`, base SQLite et temporaires sur le disque du NAS via `TMPDIR=/data`) :
+
+- Sur `96f1663` (mode `synchronous=NORMAL`, cache des requêtes préparées SQLite, état binaire) : 21 255 commandes envoyées, 21 009 acceptées, 246 refusées (`RATE_LIMITED`), 11 711 retransmissions, `p95BeforeSendMs` de 14 886,76 ms et p95 d’acquittement de 7 876,27 ms. `storeOtherMs` (3,20 s cumulé, p95 18,71 ms) et `sqliteInsertMs` (1,76 s cumulé, p95 10,74 ms) baissent nettement par rapport aux essais du 22 novembre, tandis que `sqliteCommitMs` (18,31 s cumulé, p95 308,28 ms, max 1 199,57 ms) et la contention CPU/disque des snapshots et diffusions unitaires ralentissent l’envoi. Convergence, rejeu et sauvegarde locale ont réussi (`serverPeakRssBytes` : 242 700 288 octets).
+- Sur `944b5ba` (diffusion `draw:applied` regroupée par lot, fenêtre `flush` de 15 ms, intervalle minimal de 30 s entre snapshots) : les **30 028 commandes envoyées ont toutes été acquittées** (`0` refus, `0` rate-limit participant, `30` rate-limits file, `63` retransmissions, `p95BeforeSendMs` de 40,24 ms). La diffusion synchrone tombe à 843,18 ms cumulé (p95 3,61 ms) et le RSS maximal du serveur à 153 935 872 octets (198 324 224 octets côté clients). Le p95 d’acquittement passe à **1 562,27 ms** : ce seuil reste au-dessus de 500 ms sur le NAS car 85 % du temps de lots serveur (39,92 s en `sqliteCommitMs`, p95 355,73 ms, max 1 693,45 ms, et 5,05 s en `sqliteInsertMs` pour 31,17 Mio écrits) relèvent des disques mécaniques du NAS, contre 7,98 s cumulé pour l’ensemble du traitement applicatif. Les six reconnexions, la convergence avant et après resynchronisation, le rejeu et la sauvegarde locale ont réussi (`eventCountDiscrepancy: 0`).
+
+Les essais sur le NAS de test sont clos à ce stade. La recette de 30 minutes (p95 < 500 ms, §12.2) avec sauvegardes extérieures et restauration reste à exécuter sur le VPS cible doté d’un SSD.
