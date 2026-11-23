@@ -1,8 +1,8 @@
 import { it, expect } from 'vitest';
-import { mkdtempSync,rmSync,mkdirSync,writeFileSync,symlinkSync } from 'node:fs';
+import { mkdtempSync,rmSync,mkdirSync,writeFileSync,symlinkSync,existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes,randomUUID,scryptSync } from 'node:crypto';
+import { createHash,randomBytes,randomUUID,scryptSync } from 'node:crypto';
 import sharp from 'sharp';
 import { createApp } from '../server/src/app';
 import { PALETTE } from '../shared/palette';
@@ -74,3 +74,62 @@ it('isole les tentatives derrière le seul proxy de confiance et accepte les con
    expect(result.statusCode).toBe(200);
  } finally {await app.close();rmSync(dir,{recursive:true,force:true});}
 },15000);
+
+it('vérifie la connexion asynchrone et supprime le PNG orphelin si le projet quitte le brouillon', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-admin-async-'));
+  const origin = 'http://localhost:4173';
+  const salt = randomBytes(16);
+  const password = 'secret-async-password';
+  const passwordHash = `${salt.toString('hex')}:${scryptSync(password, salt, 64).toString('hex')}`;
+  const { app, store } = await createApp({ dbPath: join(dir, 'db.sqlite'), origin, secureCookie: false, adminPasswordHash: passwordHash });
+  const headers = { origin };
+  try {
+    const [badLogin, goodLogin] = await Promise.all([
+      app.inject({ method: 'POST', url: '/api/admin/login', headers, payload: { password: 'wrong-password' } }),
+      app.inject({ method: 'POST', url: '/api/admin/login', headers, payload: { password } }),
+    ]);
+    expect(badLogin.statusCode).toBe(401);
+    expect(goodLogin.statusCode).toBe(200);
+    const cookie = (goodLogin.headers['set-cookie'] as string).split(';')[0];
+    const auth = { ...headers, cookie };
+
+    const activePng = await sharp({ create: { width: 720, height: 480, channels: 3, background: { r: 90, g: 90, b: 90 } } }).png().toBuffer();
+    const activeName = `base-${createHash('sha256').update(activePng).digest('hex')}.png`;
+    expect((await app.inject({ method: 'POST', url: '/api/admin/base-image', headers: { ...auth, 'content-type': 'image/png' }, payload: activePng })).statusCode).toBe(200);
+    expect(existsSync(join(dir, activeName))).toBe(true);
+
+    const orphanPng = await sharp({ create: { width: 720, height: 480, channels: 3, background: { r: 140, g: 140, b: 140 } } }).png().toBuffer();
+    const orphanName = `base-${createHash('sha256').update(orphanPng).digest('hex')}.png`;
+
+    const originalPrepare = store.db.prepare.bind(store.db);
+    let intercepted = false;
+    store.db.prepare = ((sql: string) => {
+      if (sql.includes("UPDATE project SET base_image_path=?") && !intercepted) {
+        intercepted = true;
+        originalPrepare("UPDATE project SET status='open' WHERE id=1").run();
+      }
+      return originalPrepare(sql);
+    }) as typeof store.db.prepare;
+    try {
+      const locked = await app.inject({ method: 'POST', url: '/api/admin/base-image', headers: { ...auth, 'content-type': 'image/png' }, payload: orphanPng });
+      expect(intercepted).toBe(true);
+      expect(locked.statusCode).toBe(409);
+      expect(locked.json().error).toBe('PROJECT_LOCKED');
+      expect(existsSync(join(dir, orphanName))).toBe(false);
+      expect(existsSync(join(dir, activeName))).toBe(true);
+
+      // Re-uploading the already active PNG while transitioning out of draft must not delete the active file.
+      originalPrepare("UPDATE project SET status='draft' WHERE id=1").run();
+      intercepted = false;
+      const sameLocked = await app.inject({ method: 'POST', url: '/api/admin/base-image', headers: { ...auth, 'content-type': 'image/png' }, payload: activePng });
+      expect(intercepted).toBe(true);
+      expect(sameLocked.statusCode).toBe(409);
+      expect(existsSync(join(dir, activeName))).toBe(true);
+    } finally {
+      store.db.prepare = originalPrepare;
+    }
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 15000);

@@ -66,3 +66,18 @@ it('ne confirme pas une commande dont la transaction échoue',()=>{
 it('valide un lot atomiquement et annule tout le lot si une écriture échoue',()=>{
  const dir=mkdtempSync(join(tmpdir(),'art-batch-'));const store=new Store(join(dir,'db.sqlite'));try{store.db.prepare("INSERT INTO participants VALUES('p','h','now','now')").run();store.db.prepare("UPDATE project SET status='open'").run();const a:DrawCommand={opId:randomUUID(),strokeId:randomUUID(),partIndex:0,final:true,tool:'pixel',colorId:1,size:1,points:[[1,1]]},b={...a,opId:randomUUID(),strokeId:randomUUID(),points:[[2,1] as const]};const first=store.submitBatch([{participantId:'p',input:a},{participantId:'p',input:b}]);expect(first.map(x=>x.result)).toMatchObject([{accepted:true,seq:1},{accepted:true,seq:2}]);store.db.exec("CREATE TRIGGER fail_batch BEFORE INSERT ON draw_events WHEN NEW.color_id=2 BEGIN SELECT RAISE(ABORT,'write error'); END");const c={...a,opId:randomUUID(),strokeId:randomUUID(),points:[[3,1] as const]},d={...b,opId:randomUUID(),strokeId:randomUUID(),colorId:2};const failed=store.submitBatch([{participantId:'p',input:c},{participantId:'p',input:d}]);expect(failed.map(x=>x.result)).toMatchObject([{accepted:false,code:'STORAGE_UNAVAILABLE'},{accepted:false,code:'STORAGE_UNAVAILABLE'}]);expect(store.seq).toBe(2);expect(store.grid[723]).toBe(0);expect(store.db.prepare('SELECT count(*) n FROM draw_events').get()?.n).toBe(2);}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+it('configure busy_timeout et crée les index de performance sur draw_events', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-store-pragmas-'));
+  const store = new Store(join(dir, 'db.sqlite'));
+  try {
+    const busy = store.db.prepare('PRAGMA busy_timeout').get() as { timeout: number };
+    expect(busy.timeout).toBeGreaterThanOrEqual(5000);
+    const indexes = (store.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='draw_events'").all() as { name: string }[]).map(row => row.name);
+    expect(indexes).toContain('draw_created_at');
+    expect(indexes).toContain('draw_participant_seq');
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
