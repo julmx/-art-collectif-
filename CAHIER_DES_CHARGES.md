@@ -40,7 +40,7 @@ L'application est un dispositif de création, pas un réseau social.
 | Reconstitution de la modération telle qu'affichée à l'époque | Hors périmètre |
 | Redémarrage ou crash du processus serveur seul | Toutes les opérations acquittées sont conservées |
 | Coupure électrique ou crash du système | Reprise d'un état cohérent avec perte possible de transactions récentes déjà acquittées |
-| Perte complète du disque ou du VPS | Objectif de perte maximale d'une heure de contributions |
+| Perte complète du disque ou du VPS | Objectif de perte maximale de 6 heures de contributions |
 | Capacité cible | 50 personnes dessinant simultanément |
 | Commandes locales non confirmées | Conservées pendant la vie de l'onglet ; persistance après fermeture ou rechargement hors périmètre |
 | Fond, dimensions et palette | Figés dès la première ouverture |
@@ -844,13 +844,13 @@ L'application ne donne pas accès à l'historique ni aux exports publics. Elle n
 
 **Perte complète du disque ou du VPS :**
 
-- Objectif de point de restauration : perte maximale d'une heure de contributions.
-- Sauvegarde cohérente déclenchée toutes les 30 minutes.
+- Objectif de point de restauration : perte maximale de 6 heures de contributions.
+- Sauvegarde cohérente déclenchée toutes les 3 heures.
 - Transfert vers un stockage extérieur au VPS.
 - Nouvelle tentative en cas d'échec, sans chevauchement non maîtrisé des tâches.
 - Succès déclaré seulement après confirmation de présence et vérification d'intégrité sur le stockage extérieur.
 - Surveillance de l'âge du point de restauration effectivement récupérable, pas seulement de la dernière tentative.
-- Alerte dès 45 minutes ; au-delà de 60 minutes, l'objectif est déclaré non respecté et l'incident doit être traité.
+- Alerte dès 4 heures ; au-delà de 6 heures, l'objectif est déclaré non respecté et l'incident doit être traité.
 - Sauvegarde de la base, du fond original et de la configuration nécessaire.
 - Conservation de plusieurs versions selon une politique documentée.
 - Protection des sauvegardes opérationnelles, qui peuvent contenir des données de session.
@@ -993,7 +993,7 @@ Automatiser les tests lorsque pertinent. Les essais physiques de tactile/stylet 
 - [ ] Une erreur disque ou un disque plein ne produit aucun faux acquittement.
 - [ ] Une restauration extérieure reproduit le point sauvegardé.
 - [ ] Les alertes de sauvegarde utilisent l'âge du point réellement récupérable.
-- [ ] L'objectif d'une heure est vérifié lors d'un exercice documenté.
+- [ ] L'objectif de 6 heures est vérifié lors d'un exercice documenté.
 - [ ] Les PNG et agrandissements sont corrects.
 - [ ] Chaque combinaison de rythme et modération produit les états attendus.
 - [ ] Les images initiale et finale sont incluses.
@@ -1057,7 +1057,7 @@ Livrables :
 - Téléchargement privé des archives.
 - Tests de bout en bout.
 - Docker Compose, HTTPS et volumes persistants.
-- Sauvegardes extérieures toutes les 30 minutes et surveillance.
+- Sauvegardes extérieures toutes les 3 heures et surveillance.
 - Test de restauration.
 - Documentation d'installation, d'exploitation et de relecture.
 - Essai de 50 dessinateurs simultanés.
@@ -1112,7 +1112,7 @@ Ne pas ajouter les fonctions exclues par anticipation.
 
 La V1 est terminée lorsqu'une personne peut ouvrir une URL, dessiner sur le canevas partagé sans inscription et voir les interventions synchronisées. Le journal permet le rejeu conformément aux garanties du §11.3. L'administrateur peut consulter l'historique privé, reconstruire un état à une date ou une séquence, masquer ou restaurer une intervention et produire images, archives et timelapses bruts ou modérés.
 
-La validation inclut un essai avec 50 participants dessinant simultanément et une restauration extérieure respectant l'objectif de perte maximale d'une heure.
+La validation inclut un essai avec 50 participants dessinant simultanément et une restauration extérieure respectant l'objectif de perte maximale de 6 heures.
 
 Aucun export public n'est disponible.
 

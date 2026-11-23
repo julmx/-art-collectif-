@@ -1,8 +1,8 @@
 [Unit]
-Description=Sauvegarde Art Collectif toutes les 30 minutes
+Description=Sauvegarde Art Collectif toutes les 3 heures
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=30min
+OnUnitActiveSec=3h
 Persistent=true
 [Install]
 WantedBy=timers.target
