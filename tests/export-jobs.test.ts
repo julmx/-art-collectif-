@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {mkdtempSync,rmSync,utimesSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,utimesSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomBytes,randomUUID,scryptSync} from 'node:crypto';
@@ -21,3 +21,54 @@ it('crée des archives et vidéos privées et refuse les paramètres invalides',
   const generated=(await app.inject({method:'GET',url:'/api/admin/generated',headers:{cookie}})).json();expect(generated.files).toEqual([video,archive,legacy]);expect(generated.items[0]).toMatchObject({file:video,dateKind:'created',metadata:{kind:'video',mode:'activity',moderation:'moderated',duration:1,fps:2,scale:1,sequence:0,moderationRevision:0}});expect(generated.items[0].metadata.captureCompletedAt).toMatch(/^\d{4}-\d\d-\d\dT/);expect(generated.items[1].metadata).toMatchObject({kind:'archive',includeVideos:false,sequence:0});expect(generated.items[2]).toMatchObject({file:legacy,dateKind:'modified',date:'2020-01-02T03:04:00.000Z',metadata:null});
  }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 },40000);
+
+it('nettoie les fichiers temporaires orphelins au démarrage sans supprimer les exports terminés', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-jobs-cleanup-'));
+  const archivesDir = join(dir, 'archives');
+  mkdirSync(archivesDir, { recursive: true });
+
+  const orphanArchiveId = randomUUID();
+  const orphanVideoId = randomUUID();
+  const doneArchiveId = randomUUID();
+  const doneVideoId = randomUUID();
+
+  const orphanFiles = [
+    join(archivesDir, `.${orphanArchiveId}.partial.zip`),
+    join(archivesDir, `.${orphanVideoId}.partial.mp4`),
+    join(archivesDir, `.${orphanArchiveId}.capture.json`),
+    join(archivesDir, `.${orphanVideoId}.metadata.json`),
+  ];
+  const keptFiles = [
+    join(archivesDir, `archive-${doneArchiveId}.zip`),
+    join(archivesDir, `archive-${doneArchiveId}.zip.json`),
+    join(archivesDir, `video-${doneVideoId}.mp4`),
+    join(archivesDir, `video-${doneVideoId}.mp4.json`),
+  ];
+
+  for (const file of orphanFiles) writeFileSync(file, 'orphelin');
+  for (const file of keptFiles) writeFileSync(file, 'termine');
+
+  const { app } = await createApp({
+    dbPath: join(dir, 'art.sqlite'),
+    origin: 'http://localhost:4173',
+    secureCookie: false,
+  });
+
+  try {
+    for (let i = 0; i < 100; i++) {
+      if (orphanFiles.every((file) => !existsSync(file))) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    for (const file of orphanFiles) {
+      expect(existsSync(file)).toBe(false);
+    }
+    for (const file of keptFiles) {
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file, 'utf8')).toBe('termine');
+    }
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
