@@ -107,3 +107,38 @@ it('rejette les traversées de chemin et accepte les anciens chemins absolus dan
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('respecte l’intervalle minimal de 30 secondes entre deux snapshots en rafale', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'art-snapshot-throttle-'));
+  const store = new Store(join(dir, 'db.sqlite'));
+  try {
+    const cache = new Snapshots(store, join(dir, 'snapshots'));
+    const t0 = 1_700_000_000_000;
+
+    store.grid[0] = 1;
+    store.seq = 500;
+    expect(cache.isDue(t0)).toBe(true);
+    await cache.saveIfDue(t0);
+    expect((await cache.latest(500, 0))?.seq).toBe(500);
+
+    // +500 commands 10s later -> throttled until 30s have elapsed.
+    store.grid[0] = 2;
+    store.seq = 1000;
+    expect(cache.isDue(t0 + 10_000)).toBe(false);
+    await cache.saveIfDue(t0 + 10_000);
+    expect((await cache.latest(1000, 0))?.seq).toBe(500);
+
+    // At 29_999 ms -> still throttled.
+    expect(cache.isDue(t0 + 29_999)).toBe(false);
+
+    // At 30_000 ms -> saved.
+    expect(cache.isDue(t0 + 30_000)).toBe(true);
+    await cache.saveIfDue(t0 + 30_000);
+    const saved = await cache.latest(1000, 0);
+    expect(saved?.seq).toBe(1000);
+    expect(saved?.grid[0]).toBe(2);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

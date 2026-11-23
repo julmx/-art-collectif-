@@ -13,6 +13,7 @@ import { applyModeration } from './admin/moderation-apply';
 
 const MAX_QUEUED_BYTES = 1_500_000;
 const MAX_DRAW_QUEUE_DEPTH = 1000;
+const FLUSH_INTERVAL_MS = 15;
 const RESYNC_INTERVAL_MS = 1000;
 const UNDO_PARTICIPANT_INTERVAL_MS = 3000;
 const UNDO_REBUILD_PAUSE_MS = 1000;
@@ -49,7 +50,6 @@ export async function createApp(options: { dbPath: string; origin: string; secur
   const nextUndoByParticipant = new Map<string, number>();
   const sessionBuckets = new Map<string, { tokens: number; time: number }>();
   let nextUndoRebuildAt = 0;
-  let lastSnapshotTriggerSeq = snapshot?.seq ?? 0;
   let snapshotWork: Promise<void> = Promise.resolve(), snapshotPending=false;
   const scheduleSnapshot = () => { if(snapshotPending)return; snapshotPending=true; snapshotWork=snapshots.saveIfDue().catch(error=>app.log.error(error,'snapshot failed')).finally(()=>{snapshotPending=false;}); };
   const timer = setInterval(() => {
@@ -147,22 +147,34 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       const results=store.submitBatch(batch,timings);
       if (onBatch) storeEnded = performance.now();
       const revision=store.revision();
+      let needsReset = false;
+      let fromSeq = 0;
+      let toSeq = 0;
+      const merged = new Map<number, number>();
       for(let i=0;i<batch.length;i++){
         const {result,changes:cells}=results[i];batch[i].ack(result);
         if(!result.accepted||result.duplicate)continue;
-        const broadcastStarted = onBatch ? performance.now() : 0;
         if (!cells) {
+          needsReset = true;
+          continue;
+        }
+        if (!fromSeq) fromSeq = result.seq;
+        toSeq = result.seq;
+        for (const [x, y, color] of cells) merged.set(y * WIDTH + x, color);
+      }
+      if (needsReset || fromSeq) {
+        const broadcastStarted = onBatch ? performance.now() : 0;
+        if (needsReset) {
           resetCanvas();
         } else {
-          for(const peer of io.sockets.sockets.values()) reserveCanvasBytes(peer, 80 + cells.length * 16);
-          io.emit('draw:applied',{seq:result.seq,moderationRevision:revision,changes:cells.map(([x,y,color])=>[y*WIDTH+x,color])});
+          const changes = Array.from(merged.entries());
+          const estimatedBytes = 96 + changes.length * 16;
+          for(const peer of io.sockets.sockets.values()) reserveCanvasBytes(peer, estimatedBytes);
+          io.emit('draw:applied',{fromSeq,seq:toSeq,moderationRevision:revision,changes});
         }
         if (onBatch) broadcastMs += performance.now() - broadcastStarted;
       }
-      if (!snapshotPending && store.seq - lastSnapshotTriggerSeq >= 500) {
-        lastSnapshotTriggerSeq = store.seq;
-        scheduleSnapshot();
-      }
+      if (!snapshotPending && snapshots.isDue()) scheduleSnapshot();
     } catch(error){
       if (onBatch && !storeEnded) storeEnded = performance.now();
       app.log.error(error,'batch reconstruction failed');
@@ -290,7 +302,7 @@ export async function createApp(options: { dbPath: string; origin: string; secur
       }
       queue.push({participantId:id,input,ack:ack as (value:unknown)=>void});
       options.drawDiagnostics?.onQueueDepth(queue.length);
-      if (!flushTimer) flushTimer = setTimeout(flush,5);
+      if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_INTERVAL_MS);
     });
   });
   app.addHook('onClose', async () => { clearInterval(timer); if(flushTimer)clearTimeout(flushTimer); queue.length=0; await snapshotWork; io.close(); store.close(); });

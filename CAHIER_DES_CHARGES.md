@@ -517,7 +517,7 @@ Utiliser Socket.IO sans dépendre exclusivement de sa récupération automatique
 | Client → serveur | draw:undo | Demande d'annulation du dernier trait visible du participant (acquittement `{ok, code?}`) |
 | Client → serveur | canvas:resync | Demande d'état complet |
 | Serveur → client | canvas:state | Grille, dimensions, palette, seq, moderationRevision, statut |
-| Serveur → client | draw:applied | seq, moderationRevision et changements visibles |
+| Serveur → client | draw:applied | Plage de séquences contiguës (`fromSeq`, `seq`), `moderationRevision` et changements visibles fusionnés |
 | Serveur → client | project:status | Statut et disponibilité courante du dessin |
 | Serveur → client | project:updated | Signal de mise à jour des métadonnées publiques du projet |
 | Serveur → client | participant:restriction | État de bannissement de la session courante (`{banned}`) |
@@ -546,11 +546,11 @@ Ne jamais sérialiser directement une ligne de draw_events vers les participants
 
 Les messages publics ne contiennent ni participant_id, ni identifiants de session, ni motifs de modération. L'identifiant opId est retourné uniquement au participant concerné dans sa réponse.
 
-La diffusion envoie les cellules modifiées et leurs nouveaux index, sous forme compacte et déterministe. Elle ne diffuse pas la géométrie d'un trait masqué. Une commande sans effet visible peut produire une mise à jour vide portant sa séquence.
+La diffusion envoie les cellules modifiées et leurs nouveaux index, sous forme compacte et déterministe, commande par commande ou par lot de séquences contiguës (`fromSeq` à `seq`, en ne conservant que la dernière couleur visible par cellule dans le lot). Elle ne diffuse pas la géométrie d'un trait masqué. Une commande ou un lot sans effet visible peut produire une mise à jour vide portant sa plage de séquences.
 
-Les limites de taille des messages entrants ne sont pas confondues avec celles des états ou mises à jour sortants. Le protocole sortant accepte une grille complète et les changements résultant d'une commande valide.
+Les limites de taille des messages entrants ne sont pas confondues avec celles des états ou mises à jour sortants. Le protocole sortant accepte une grille complète et les changements résultant d'un lot de commandes valides.
 
-Chaque mise à jour porte seq et moderationRevision. Un état de dessin est identifié par ce couple.
+Chaque mise à jour porte sa plage de séquences (`fromSeq`, `seq`) et `moderationRevision`. Un état de dessin est identifié par le couple `(seq, moderationRevision)`.
 
 ### 7.4 Initialisation, remplacement et reconnexion
 
@@ -651,7 +651,7 @@ Les décisions successives restent conservées pour la traçabilité administrat
 
 Créer un snapshot :
 
-- Toutes les 500 commandes acceptées depuis le précédent snapshot.
+- Toutes les 500 commandes acceptées depuis le précédent snapshot, sous réserve d'un intervalle minimal de 30 secondes afin d'éviter la saturation disque sous forte rafale.
 - Ou après 15 minutes écoulées depuis le précédent snapshot si la grille a changé.
 
 Ne pas créer de snapshot si aucun changement graphique ni changement de révision ne le justifie. Une clôture technique seule ne nécessite pas de nouveau snapshot.
